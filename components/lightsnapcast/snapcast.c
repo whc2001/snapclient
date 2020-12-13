@@ -13,6 +13,12 @@
 #include <stddef.h>
 #include <buffer.h>
 
+#include "esp_log.h"
+#include "esp_heap_caps.h"
+
+/* Logging tag */
+static const char *TAG = "libSNAPCAST";
+
 const int BASE_MESSAGE_SIZE = 26;
 const int TIME_MESSAGE_SIZE = 8;
 
@@ -260,7 +266,11 @@ int wire_chunk_message_deserialize(wire_chunk_message_t *msg, const char *data, 
     }
 
     // TODO maybe should check to see if need to free memory?
+	#if CONFIG_SPIRAM
+    msg->payload = (char *)heap_caps_malloc(msg->size * sizeof(char), MALLOC_CAP_SPIRAM);
+	#else
     msg->payload = malloc(msg->size * sizeof(char));
+	#endif
     // Failed to allocate the memory
     if (!msg->payload) {
         return 2;
@@ -307,3 +317,6 @@ int time_message_deserialize(time_message_t *msg, const char *data, uint32_t siz
 
     return result;
 }
+
+
+
