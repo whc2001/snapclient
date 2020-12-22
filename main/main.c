@@ -41,6 +41,12 @@
 
 #include <sys/time.h>
 
+
+
+uint64_t wirechnkCnt = 0;
+uint64_t pcmchnkCnt = 0;
+
+
 #define CONFIG_USE_SNTP		0
 
 #define DAC_OUT_BUFFER_TIME_US		0//3 * 1526LL		//TODO: not sure about this... // @48kHz, 16bit samples, 2 channels and a DMA buffer length of 300 Byte and 3 buffers. 300 Byte / (48000 * 2 Byte * 2 channels)
@@ -54,7 +60,7 @@ char *codecString = NULL;
 // configMAX_PRIORITIES - 1
 
 // TODO: what are the best values here?
-#define SYNC_TASK_PRIORITY		12
+#define SYNC_TASK_PRIORITY		6
 #define SYNC_TASK_CORE_ID  		1
 
 #define HTTP_TASK_PRIORITY		6
@@ -63,11 +69,14 @@ char *codecString = NULL;
 #define I2S_TASK_PRIORITY  		0
 #define I2S_TASK_CORE_ID  		1
 
+#define FLAC_DECODER_PRIORITY	6
+#define FLAC_DECODER_CORE_ID	1
+
 #define AGE_THRESHOLD	50LL	// in µs
 
 
 QueueHandle_t timestampQueueHandle;
-#define TIMESTAMP_QUEUE_LENGTH 	150		// TODO: what's the minimum value needed here, although probably not that important because we create queue using xQueueCreate()
+#define TIMESTAMP_QUEUE_LENGTH 	5		// TODO: what's the minimum value needed here, although probably not that important because we create queue using xQueueCreate()
 static StaticQueue_t timestampQueue;
 uint8_t timestampQueueStorageArea[ TIMESTAMP_QUEUE_LENGTH * sizeof(tv_t) ];
 
@@ -107,11 +116,9 @@ audio_board_handle_t board_handle;
 /* Constants that aren't configurable in menuconfig */
 #define HOST "192.168.1.6"
 #define PORT 1704
-#define BUFF_LEN 5000
+#define BUFF_LEN 10000
 unsigned int addr;
 uint32_t port = 0;
-/* Logging tag */
-//static const char *TAG = "SNAPCAST";
 
 /* FreeRTOS event group to signal when we are connected & ready to make a request */
 //static EventGroupHandle_t wifi_event_group;
@@ -448,14 +455,14 @@ static void snapcast_sync_task(void *pvParameters) {
 
 	while(1) {
 		if (chnk == NULL) {
-			ret = xQueueReceive(pcmChunkQueueHandle, &chnk, portMAX_DELAY );
+			ret = xQueueReceive(pcmChunkQueueHandle, &chnk, pdMS_TO_TICKS(3000) );
 		}
 		else {
 			ret = pdPASS;
 		}
 
 		if( ret == pdPASS )	{
-			if (initial_sync > 5) {		// hard sync was successfull?
+			if (initial_sync > 5) {		// hard sync was successful?
 				if (server_now(&serverNow) >= 0) {
 					age =   ((int64_t)serverNow.tv_sec * 1000000LL + (int64_t)serverNow.tv_usec) -
 							((int64_t)chnk->timestamp.sec * 1000000LL + (int64_t)chnk->timestamp.usec) -
@@ -500,7 +507,14 @@ static void snapcast_sync_task(void *pvParameters) {
 //					ESP_LOGI(TAG, "after age: %lldus", age);
 //				}
 
-				raw_stream_write(*(taskCfg->p_raw_stream_writer), chnk->payload, chnk->size);
+				int bytesWritten = 0;
+				while ( bytesWritten < chnk->size ) {
+					bytesWritten += raw_stream_write(*(taskCfg->p_raw_stream_writer), chnk->payload, chnk->size);
+					if (bytesWritten < chnk->size) {
+						ESP_LOGE(TAG, "i2s raw writer ring buf full");
+						vTaskDelay(100);
+					}
+				}
 
 				free(chnk->payload);
 				free(chnk);
@@ -547,6 +561,9 @@ static void snapcast_sync_task(void *pvParameters) {
 			else {
 				vTaskDelay( pdMS_TO_TICKS(10) );
 			}
+		}
+		else {
+			ESP_LOGE(TAG, "Couldn't get PCM chunk");
 		}
 	}
 }
@@ -789,6 +806,17 @@ static void http_get_task(void *pvParameters) {
 							// TODO: maybe restart the whole thing if a new codec header is received while stream session is ongoing
 
 							raw_stream_write(*p_raw_stream_writer, codec_header_message.payload, size);
+
+//							printf("\r\n");
+//							for (int i=0; i<size; i++) {
+//								printf("%c", codec_header_message.payload[i]);
+//							}
+//							printf("\r\n");
+//							printf("\r\n");
+//							for (int i=0; i<size; i++) {
+//								printf("%02x", codec_header_message.payload[i]);
+//							}
+//							printf("\r\n");
 						}
 						else if (strcmp(codec_header_message.codec,"opus") == 0) {
 							// TODO: NOT Implemented yet!
@@ -852,17 +880,34 @@ static void http_get_task(void *pvParameters) {
 						tv_t timestamp;
 						timestamp = wire_chunk_message.timestamp;
 
-						if (xQueueSendToBack( timestampQueueHandle, &timestamp, portMAX_DELAY) == pdTRUE) {
+						int bytesWritten = 0;
+
+						wirechnkCnt++;
+						//ESP_LOGI(TAG, "wirechnkCnt: %lld", wirechnkCnt);
+
+						while ( bytesWritten < wire_chunk_message.size ) {
+							bytesWritten += raw_stream_write(*p_raw_stream_writer, wire_chunk_message.payload, wire_chunk_message.size);
+							if (bytesWritten < wire_chunk_message.size) {
+								ESP_LOGE(TAG, "wirechnk decode ring buf full");
+								vTaskDelay(100);
+							}
+						}
+
+						if (xQueueSendToBack( timestampQueueHandle, &timestamp, pdMS_TO_TICKS(3000)) == pdTRUE) {
 							// write encoded data to decoder pipeline, callback will trigger when it's finished
 							// also we do a check if all data was written successfully
-							int bytesWritten = 0;
-
-							while ( bytesWritten < wire_chunk_message.size ) {
-								bytesWritten += raw_stream_write(*p_raw_stream_writer, wire_chunk_message.payload, wire_chunk_message.size);
-								if (bytesWritten < wire_chunk_message.size) {
-									vTaskDelay(100);
-								}
-							}
+//							int bytesWritten = 0;
+//
+//							wirechnkCnt++;
+//							//ESP_LOGI(TAG, "wirechnkCnt: %lld", wirechnkCnt);
+//
+//							while ( bytesWritten < wire_chunk_message.size ) {
+//								bytesWritten += raw_stream_write(*p_raw_stream_writer, wire_chunk_message.payload, wire_chunk_message.size);
+//								if (bytesWritten < wire_chunk_message.size) {
+//									ESP_LOGE(TAG, "wirechnk decode ring buf full");
+//									vTaskDelay(100);
+//								}
+//							}
 						}
 						else {
 							ESP_LOGW(TAG, "timestamp queue full, dropping data ...");
@@ -1130,6 +1175,12 @@ int flac_decoder_write_cb(audio_element_handle_t el, char *buffer, int len, Tick
 
 	//ESP_LOGI(TAG, "flac_decoder_write_cb: got buffer with length %d", len);
 
+//	audio_element_info_t music_info = {0};
+//	audio_element_getinfo(el, &music_info);
+//	ESP_LOGI(TAG, "[ cb ] Receive music info from %s decoder, sample_rates=%d, bits=%d, ch=%d, total_bytes: %lld, byte_pos:%lld",
+//			 codecString, music_info.sample_rates, music_info.bits, music_info.channels, music_info.total_bytes, music_info.byte_pos);
+
+
 	if (xQueueReceive( timestampQueueHandle, &timestamp, 0 ) == pdPASS) {
 		pcm_chunk_message = (wire_chunk_message_t *)malloc(sizeof(wire_chunk_message_t));
 		if (pcm_chunk_message == NULL) {
@@ -1151,12 +1202,19 @@ int flac_decoder_write_cb(audio_element_handle_t el, char *buffer, int len, Tick
 
 		ret = len;
 		if( xQueueSendToBack( pcmChunkQueueHandle, &pcm_chunk_message, pdMS_TO_TICKS(5)) != pdPASS ) {
-			ESP_LOGW(TAG, "flac_decoder_write_cb: Failed to post the message");
+			ESP_LOGE(TAG, "flac_decoder_write_cb: Failed to post the message");
 
 			free(pcm_chunk_message->payload);
 			free(pcm_chunk_message);
 
 			ret = AEL_IO_FAIL;
+		}
+		else {
+			pcmchnkCnt++;
+			//if ((wirechnkCnt - pcmchnkCnt) > 3)
+			{
+				//ESP_LOGW(TAG, "diff: %lld", wirechnkCnt - pcmchnkCnt);
+			}
 		}
 	}
 	else {
@@ -1204,16 +1262,20 @@ void app_main(void) {
     ESP_LOGI(TAG, "Create audio pipeline for decoding");
     audio_pipeline_cfg_t flac_dec_pipeline_cfg = DEFAULT_AUDIO_PIPELINE_CONFIG();
     flacDecodePipeline = audio_pipeline_init(&flac_dec_pipeline_cfg);
+    flac_dec_pipeline_cfg.rb_size = 16 * 4096;	// TODO: how much is really needed?
     AUDIO_NULL_CHECK(TAG, flacDecodePipeline, return);
 
     ESP_LOGI(TAG, "Create raw stream to write data from snapserver to decoder");
     raw_stream_cfg_t raw_1_cfg = RAW_STREAM_CFG_DEFAULT();
     raw_1_cfg.type = AUDIO_STREAM_WRITER;
-    raw_1_cfg.out_rb_size = 8 * 4096;	// TODO: how much is really needed?
+    raw_1_cfg.out_rb_size = 16 * 4096;	// TODO: how much is really needed?
     raw_stream_writer_to_decoder = raw_stream_init(&raw_1_cfg);
 
     ESP_LOGI(TAG, "Create flac decoder to decode flac file and set custom write callback");
 	flac_decoder_cfg_t flac_cfg = DEFAULT_FLAC_DECODER_CONFIG();
+	flac_cfg.task_prio = FLAC_DECODER_PRIORITY;
+	flac_cfg.task_core = FLAC_DECODER_CORE_ID;
+	flac_cfg.out_rb_size = 16 * 4096;	// TODO: how much is really needed?
 	decoder = flac_decoder_init(&flac_cfg);
 	audio_element_set_write_cb(decoder, flac_decoder_write_cb, NULL);
 
@@ -1227,6 +1289,7 @@ void app_main(void) {
 
     ESP_LOGI(TAG, "Create audio pipeline for playback");
 	audio_pipeline_cfg_t playback_pipeline_cfg = DEFAULT_AUDIO_PIPELINE_CONFIG();
+	playback_pipeline_cfg.rb_size = 16 * 4096;	// TODO: how much is really needed?
 	playbackPipeline = audio_pipeline_init(&playback_pipeline_cfg);
 	AUDIO_NULL_CHECK(TAG, playbackPipeline, return);
 
@@ -1240,9 +1303,9 @@ void app_main(void) {
 	i2s_stream_cfg_t i2s_cfg = I2S_STREAM_CFG_DEFAULT();
 	//i2s_cfg.task_stack = I2S_STREAM_TASK_STACK * 2;
 	i2s_cfg.i2s_config.sample_rate = 48000;
-	//i2s_cfg.i2s_config.dma_buf_count = 8;
-	//i2s_cfg.i2s_config.dma_buf_len = 480;
-	//i2s_cfg.out_rb_size = 1024;
+	i2s_cfg.i2s_config.dma_buf_count = 4;
+	i2s_cfg.i2s_config.dma_buf_len = 410;
+	i2s_cfg.out_rb_size = 4 * 410;
 	i2s_cfg.task_core = I2S_TASK_CORE_ID;
 	//i2s_cfg.task_prio = I2S_TASK_PRIORITY;
 	i2s_stream_writer = i2s_stream_init(&i2s_cfg);
@@ -1324,8 +1387,8 @@ void app_main(void) {
             audio_element_getinfo(decoder, &music_info);
 
             if (codecString != NULL) {
-				ESP_LOGI(TAG, "[ * ] Receive music info from %s decoder, sample_rates=%d, bits=%d, ch=%d",
-									 codecString, music_info.sample_rates, music_info.bits, music_info.channels);
+				ESP_LOGI(TAG, "[ * ] Receive music info from %s decoder, sample_rates=%d, bits=%d, ch=%d, total_bytes: %lld, byte_pos:%lld",
+									 codecString, music_info.sample_rates, music_info.bits, music_info.channels, music_info.total_bytes, music_info.byte_pos);
         	}
             else {
             	ESP_LOGI(TAG, "[ * ] Receive music info from decoder, sample_rates=%d, bits=%d, ch=%d",
