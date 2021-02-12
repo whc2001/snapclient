@@ -12,6 +12,10 @@
 #include "esp_event.h"
 #include "nvs_flash.h"
 
+#include "esp_types.h"
+#include "driver/periph_ctrl.h"
+#include "driver/timer.h"
+
 #include "audio_element.h"
 #include "audio_pipeline.h"
 #include "audio_event_iface.h"
@@ -37,21 +41,26 @@
 
 #include "snapcast.h"
 
-//#include "driver/timer.h"
-
 #include <sys/time.h>
 
+#define COLLECT_RUNTIME_STATS	0
+
+audio_pipeline_handle_t flacDecodePipeline;
+audio_element_handle_t raw_stream_writer_to_decoder, decoder, raw_stream_reader;
+audio_pipeline_handle_t playbackPipeline;
+audio_element_handle_t raw_stream_writer_to_i2s, i2s_stream_writer;
 
 
 uint64_t wirechnkCnt = 0;
 uint64_t pcmchnkCnt = 0;
 
+TaskHandle_t syncTaskHandle = NULL;
 
 #define CONFIG_USE_SNTP		0
 
-#define DAC_OUT_BUFFER_TIME_US		0//3 * 1526LL		//TODO: not sure about this... // @48kHz, 16bit samples, 2 channels and a DMA buffer length of 300 Byte and 3 buffers. 300 Byte / (48000 * 2 Byte * 2 channels)
+#define DAC_OUT_BUFFER_TIME_US		20//20//375//750//24000		//TODO: not sure about this... I2S DMA buffer length ???
 
-static const char *TAG = "SNAPCLIENT";
+static const char *TAG = "SC";
 
 static int sntp_synced = 0;
 
@@ -60,28 +69,31 @@ char *codecString = NULL;
 // configMAX_PRIORITIES - 1
 
 // TODO: what are the best values here?
-#define SYNC_TASK_PRIORITY		6
-#define SYNC_TASK_CORE_ID  		1
+#define SYNC_TASK_PRIORITY		configMAX_PRIORITIES - 2
+#define SYNC_TASK_CORE_ID  		tskNO_AFFINITY//1//tskNO_AFFINITY
+
+#define TIMESTAMP_TASK_PRIORITY	6
+#define TIMESTAMP_TASK_CORE_ID  tskNO_AFFINITY//1//tskNO_AFFINITY
 
 #define HTTP_TASK_PRIORITY		6
-#define HTTP_TASK_CORE_ID  		0
+#define HTTP_TASK_CORE_ID  		tskNO_AFFINITY//0//tskNO_AFFINITY
 
-#define I2S_TASK_PRIORITY  		0
-#define I2S_TASK_CORE_ID  		1
+#define I2S_TASK_PRIORITY  		configMAX_PRIORITIES - 1
+#define I2S_TASK_CORE_ID  		tskNO_AFFINITY//1//tskNO_AFFINITY
 
 #define FLAC_DECODER_PRIORITY	6
-#define FLAC_DECODER_CORE_ID	1
+#define FLAC_DECODER_CORE_ID	tskNO_AFFINITY//0//tskNO_AFFINITY
 
-#define AGE_THRESHOLD	50LL	// in µs
+#define AGE_THRESHOLD	150LL	// in µs
 
 
 QueueHandle_t timestampQueueHandle;
-#define TIMESTAMP_QUEUE_LENGTH 	5		// TODO: what's the minimum value needed here, although probably not that important because we create queue using xQueueCreate()
+#define TIMESTAMP_QUEUE_LENGTH 	300		// TODO: what's the minimum value needed here, although probably not that important because we create queue using xQueueCreate()
 static StaticQueue_t timestampQueue;
 uint8_t timestampQueueStorageArea[ TIMESTAMP_QUEUE_LENGTH * sizeof(tv_t) ];
 
 QueueHandle_t pcmChunkQueueHandle;
-#define PCM_CHNK_QUEUE_LENGTH 150	// TODO: one chunk is hardcoded to 20ms, change it to be dynamically adjustable. 1s buffer = 50
+#define PCM_CHNK_QUEUE_LENGTH 200	// TODO: one chunk is hardcoded to 24ms, change it to be dynamically adjustable. 1s buffer ~ 42
 static StaticQueue_t pcmChunkQueue;
 uint8_t pcmChunkQueueStorageArea[ PCM_CHNK_QUEUE_LENGTH * sizeof(wire_chunk_message_t *) ];
 
@@ -99,10 +111,12 @@ typedef struct http_task_cfg_s {
 
 SemaphoreHandle_t diffBufSemaphoreHandle = NULL;
 
+SemaphoreHandle_t timer0_syncSampleSemaphoreHandle = NULL;
+
 static struct timeval diffToServer = {0, 0};	// median diff to server in µs
-static struct timeval diffBuf[50] = {0};	// collected diff's to server
+static struct timeval diffBuf[200] = {0};	// collected diff's to server
 //static struct timeval *medianArray = NULL;	// temp median calculation data is stored at this location
-static struct timeval medianArray[50] = {0};	// temp median calculation data is stored at this location
+static struct timeval medianArray[200] = {0};	// temp median calculation data is stored at this location
 
 uint32_t buffer_ms = 400;
 uint8_t  muteCH[4] = {0};
@@ -114,6 +128,7 @@ audio_board_handle_t board_handle;
 */
 
 /* Constants that aren't configurable in menuconfig */
+//#define HOST "192.168.43.62"
 #define HOST "192.168.1.6"
 #define PORT 1704
 #define BUFF_LEN 10000
@@ -191,11 +206,11 @@ void wifi_init_sta(void) {
 
     /* Waiting until either the connection is established (WIFI_CONNECTED_BIT) or connection failed for the maximum
      * number of re-tries (WIFI_FAIL_BIT). The bits are set by event_handler() (see above) */
-    EventBits_t bits = xEventGroupWaitBits(s_wifi_event_group,
-            WIFI_CONNECTED_BIT | WIFI_FAIL_BIT,
-            pdFALSE,
-            pdFALSE,
-            portMAX_DELAY);
+    EventBits_t bits = xEventGroupWaitBits(	s_wifi_event_group,
+											WIFI_CONNECTED_BIT | WIFI_FAIL_BIT,
+											pdFALSE,
+											pdFALSE,
+											portMAX_DELAY );
 
     /* xEventGroupWaitBits() returns the bits before the call returned, hence we can test which event actually
      * happened. */
@@ -275,7 +290,7 @@ void find_mdns_service(const char * service_name, const char * proto) {
 /**
  *
  */
-void QuickSort(struct timeval *a, int left, int right) {
+void quick_sort_timeval(struct timeval *a, int left, int right) {
 	int i = left;
 	int j = right;
 	struct timeval temp = a[i];
@@ -294,8 +309,35 @@ void QuickSort(struct timeval *a, int left, int right) {
 		}
 		a[i] = temp;
 
-		QuickSort( a, left, i - 1 );
-		QuickSort( a, j + 1, right );
+		quick_sort_timeval( a, left, i - 1 );
+		quick_sort_timeval( a, j + 1, right );
+	}
+}
+
+/**
+ *
+ */
+void quick_sort_int32(int32_t *a, int left, int right) {
+	int i = left;
+	int j = right;
+	int32_t temp = a[i];
+
+	if( left < right ) {
+		while(i < j) {
+			while(a[j] >= temp && (i < j)) {
+				j--;
+			}
+			a[i] = a[j];
+
+			while(a[j] <= temp && (i < j)) {
+				i++;
+			}
+			a[j] = a[i];
+		}
+		a[i] = temp;
+
+		quick_sort_int32( a, left, i - 1 );
+		quick_sort_int32( a, j + 1, right );
 	}
 }
 
@@ -320,7 +362,7 @@ int8_t get_median( const struct timeval *tDiff, size_t n, struct timeval *result
 	}
 
 	memcpy( medianArray, tDiff, sizeof(struct timeval) * n );	// TODO: how to avoid this copy?
-	QuickSort(medianArray, 0, n);
+	quick_sort_timeval(medianArray, 0, n);
 
 //    if( (n % 2) == 0 ) {
 //        // if there is an even number of elements, return mean of the two elements in the middle
@@ -367,7 +409,7 @@ int8_t set_diff_to_server( struct timeval *tDiff, size_t len) {
     //ESP_LOGI(TAG, "set_diff_to_server: median is %ld.%06ld", tmpDiffToServer.tv_sec, tmpDiffToServer.tv_usec);
 
     if (xSemaphoreTake( diffBufSemaphoreHandle, 1 ) == pdFALSE) {
-    	ESP_LOGW(TAG, "set_diff_to_server: can't take semaphore");
+    	//ESP_LOGW(TAG, "set_diff_to_server: can't take semaphore");
 
 		return -1;
 	}
@@ -394,7 +436,7 @@ int8_t get_diff_to_server( struct timeval *tDiff ) {
 	if (xSemaphoreTake( diffBufSemaphoreHandle, 0 ) == pdFALSE) {
 		*tDiff = lastDiff;
 
-		ESP_LOGW(TAG, "get_diff_to_server: can't take semaphore. Old diff retreived");
+		//ESP_LOGW(TAG, "get_diff_to_server: can't take semaphore. Old diff retreived");
 
 		return -2;
 	}
@@ -443,127 +485,568 @@ int8_t server_now( struct timeval *sNow ) {
 }
 
 
+/*
+ * Timer group0 ISR handler
+ *
+ * Note:
+ * We don't call the timer API here because they are not declared with IRAM_ATTR.
+ * If we're okay with the timer irq not being serviced while SPI flash cache is disabled,
+ * we can allocate this interrupt without the ESP_INTR_FLAG_IRAM flag and use the normal API.
+ */
+void IRAM_ATTR timer_group0_isr(void *para) {
+    timer_spinlock_take(TIMER_GROUP_0);
+
+    BaseType_t xHigherPriorityTaskWoken = pdFALSE;
+
+    // Retrieve the interrupt status and the counter value
+    //   from the timer that reported the interrupt
+    uint32_t timer_intr = timer_group_get_intr_status_in_isr(TIMER_GROUP_0);
+
+    // Clear the interrupt
+    //   and update the alarm time for the timer with without reload
+    if (timer_intr & TIMER_INTR_T1) {
+        timer_group_clr_intr_status_in_isr(TIMER_GROUP_0, TIMER_1);
+
+        // Notify the task in the task's notification value.
+        xTaskNotifyFromISR( syncTaskHandle,
+                            1,
+                            eSetBits,
+                            &xHigherPriorityTaskWoken );
+    }
+
+    timer_spinlock_give(TIMER_GROUP_0);
+
+	if( xHigherPriorityTaskWoken )	{
+		portYIELD_FROM_ISR ();
+	}
+}
+
+/*
+ *
+ */
+static void tg0_timer_init(void) {
+    // Select and initialize basic parameters of the timer
+    timer_config_t config = {
+        .divider = 8,		// 100ns ticks
+        .counter_dir = TIMER_COUNT_UP,
+        .counter_en = TIMER_PAUSE,
+        .alarm_en = TIMER_ALARM_EN,
+        .auto_reload = TIMER_AUTORELOAD_DIS,
+    }; // default clock source is APB
+    timer_init(TIMER_GROUP_0, TIMER_1, &config);
+
+    // Configure the alarm value and the interrupt on alarm.
+    timer_set_alarm_value(TIMER_GROUP_0, TIMER_1, 0);
+    timer_enable_intr(TIMER_GROUP_0, TIMER_1);
+    //timer_isr_register(TIMER_GROUP_0, TIMER_1, timer_group0_isr, NULL, ESP_INTR_FLAG_IRAM | ESP_INTR_FLAG_LEVEL3, NULL);
+    timer_isr_register(TIMER_GROUP_0, TIMER_1, timer_group0_isr, NULL, ESP_INTR_FLAG_IRAM | ESP_INTR_FLAG_LEVEL1, NULL);
+}
+
+static void tg0_timer1_start(uint64_t alarm_value) {
+	timer_pause(TIMER_GROUP_0, TIMER_1);
+	//timer_set_counter_value(TIMER_GROUP_0, TIMER_1, timer_start_value_us);
+	timer_set_counter_value(TIMER_GROUP_0, TIMER_1, 0);
+    timer_set_alarm_value(TIMER_GROUP_0, TIMER_1, alarm_value);
+    timer_set_alarm(TIMER_GROUP_0, TIMER_1, TIMER_ALARM_EN);
+    timer_start(TIMER_GROUP_0, TIMER_1);
+
+//    ESP_LOGI(TAG, "started age timer");
+}
+
+
+
+
+#define STATS_TASK_PRIO     3
+#define STATS_TICKS         pdMS_TO_TICKS(5000)
+#define ARRAY_SIZE_OFFSET   5   //Increase this if print_real_time_stats returns ESP_ERR_INVALID_SIZE
+
+//static char task_names[15][configMAX_TASK_NAME_LEN];
+
+/**
+ * @brief   Function to print the CPU usage of tasks over a given duration.
+ *
+ * This function will measure and print the CPU usage of tasks over a specified
+ * number of ticks (i.e. real time stats). This is implemented by simply calling
+ * uxTaskGetSystemState() twice separated by a delay, then calculating the
+ * differences of task run times before and after the delay.
+ *
+ * @note    If any tasks are added or removed during the delay, the stats of
+ *          those tasks will not be printed.
+ * @note    This function should be called from a high priority task to minimize
+ *          inaccuracies with delays.
+ * @note    When running in dual core mode, each core will correspond to 50% of
+ *          the run time.
+ *
+ * @param   xTicksToWait    Period of stats measurement
+ *
+ * @return
+ *  - ESP_OK                Success
+ *  - ESP_ERR_NO_MEM        Insufficient memory to allocated internal arrays
+ *  - ESP_ERR_INVALID_SIZE  Insufficient array size for uxTaskGetSystemState. Trying increasing ARRAY_SIZE_OFFSET
+ *  - ESP_ERR_INVALID_STATE Delay duration too short
+ */
+static esp_err_t print_real_time_stats(TickType_t xTicksToWait)
+{
+    TaskStatus_t *start_array = NULL, *end_array = NULL;
+    UBaseType_t start_array_size, end_array_size;
+    uint32_t start_run_time, end_run_time;
+    esp_err_t ret;
+
+    //Allocate array to store current task states
+    start_array_size = uxTaskGetNumberOfTasks() + ARRAY_SIZE_OFFSET;
+    start_array = malloc(sizeof(TaskStatus_t) * start_array_size);
+    if (start_array == NULL) {
+        ret = ESP_ERR_NO_MEM;
+        goto exit;
+    }
+    //Get current task states
+    start_array_size = uxTaskGetSystemState(start_array, start_array_size, &start_run_time);
+    if (start_array_size == 0) {
+        ret = ESP_ERR_INVALID_SIZE;
+        goto exit;
+    }
+
+    vTaskDelay(xTicksToWait);
+
+    //Allocate array to store tasks states post delay
+    end_array_size = uxTaskGetNumberOfTasks() + ARRAY_SIZE_OFFSET;
+    end_array = malloc(sizeof(TaskStatus_t) * end_array_size);
+    if (end_array == NULL) {
+        ret = ESP_ERR_NO_MEM;
+        goto exit;
+    }
+    //Get post delay task states
+    end_array_size = uxTaskGetSystemState(end_array, end_array_size, &end_run_time);
+    if (end_array_size == 0) {
+        ret = ESP_ERR_INVALID_SIZE;
+        goto exit;
+    }
+
+    //Calculate total_elapsed_time in units of run time stats clock period.
+    uint32_t total_elapsed_time = (end_run_time - start_run_time);
+    if (total_elapsed_time == 0) {
+        ret = ESP_ERR_INVALID_STATE;
+        goto exit;
+    }
+
+    printf("| Task | Run Time | Percentage\n");
+    //Match each task in start_array to those in the end_array
+    for (int i = 0; i < start_array_size; i++) {
+        int k = -1;
+        for (int j = 0; j < end_array_size; j++) {
+            if (start_array[i].xHandle == end_array[j].xHandle) {
+                k = j;
+                //Mark that task have been matched by overwriting their handles
+                start_array[i].xHandle = NULL;
+                end_array[j].xHandle = NULL;
+                break;
+            }
+        }
+        //Check if matching task found
+        if (k >= 0) {
+            uint32_t task_elapsed_time = end_array[k].ulRunTimeCounter - start_array[i].ulRunTimeCounter;
+            uint32_t percentage_time = (task_elapsed_time * 100UL) / (total_elapsed_time * portNUM_PROCESSORS);
+            printf("| %s | %d | %d%%\n", start_array[i].pcTaskName, task_elapsed_time, percentage_time);
+        }
+    }
+
+    //Print unmatched tasks
+    for (int i = 0; i < start_array_size; i++) {
+        if (start_array[i].xHandle != NULL) {
+            printf("| %s | Deleted\n", start_array[i].pcTaskName);
+        }
+    }
+    for (int i = 0; i < end_array_size; i++) {
+        if (end_array[i].xHandle != NULL) {
+            printf("| %s | Created\n", end_array[i].pcTaskName);
+        }
+    }
+    ret = ESP_OK;
+
+exit:    //Common return path
+    free(start_array);
+    free(end_array);
+    return ret;
+}
+
+
+
+
+
+static void stats_task(void *arg) {
+    //Print real time stats periodically
+    while (1) {
+        printf("\n\nGetting real time stats over %d ticks\n", STATS_TICKS);
+        if (print_real_time_stats(STATS_TICKS) == ESP_OK) {
+            printf("Real time stats obtained\n");
+        } else {
+            printf("Error getting real time stats\n");
+        }
+        vTaskDelay(pdMS_TO_TICKS(1000));
+    }
+}
+
+#define AVG_BUF_SIZE		100
+
+int32_t avg_window[AVG_BUF_SIZE] = {0};
+int32_t tmpAvg[AVG_BUF_SIZE];
+/**
+ *
+ */
 static void snapcast_sync_task(void *pvParameters) {
 	snapcast_sync_task_cfg_t *taskCfg = (snapcast_sync_task_cfg_t *)pvParameters;
 	wire_chunk_message_t *chnk = NULL;
 	struct timeval serverNow = {0, 0};
 	int64_t age;
+	int32_t ageAcummulated_us = 0, ageAcummulatedOld_us = 1;
 	BaseType_t ret;
-	uint8_t initial_sync = 0;
+	int chunkDuration_us = 24000;
+	int64_t sampleDuration_ns = (1000000 / 48); // 16bit, 2ch, 48kHz (in nano seconds)
+	char *p_payload = NULL;
+	int size = 0;
+	uint32_t notifiedValue;
+	uint64_t timer_val;
+	int avg_window_cnt = 0;
+	int32_t alarmValAvg = 0;
+	const int32_t alarmValSubBase = 500;
+	int32_t alarmValSub = 0, alarmValSubCnt = 0;
+	int skippedSamples = 0;
+	int bytesWritten = 0;
+	double scaleFactor = 1.0;
+	int init = 0;
+	int32_t realAge, realAgeOld = 0, maxRealAge = INT_MIN, minRealAge = INT_MAX, firstAge = 0;;
+	float gradient = 0.0;
+	int64_t sample_count = 0;
 
 	ESP_LOGI(TAG, "started sync task");
 
+	tg0_timer_init();		// initialize sample sync timer
+
 	while(1) {
 		if (chnk == NULL) {
-			ret = xQueueReceive(pcmChunkQueueHandle, &chnk, pdMS_TO_TICKS(3000) );
+			ret = xQueueReceive(pcmChunkQueueHandle, &chnk, pdMS_TO_TICKS(1000) );
 		}
 		else {
 			ret = pdPASS;
 		}
 
 		if( ret == pdPASS )	{
-			if (initial_sync > 5) {		// hard sync was successful?
-				if (server_now(&serverNow) >= 0) {
-					age =   ((int64_t)serverNow.tv_sec * 1000000LL + (int64_t)serverNow.tv_usec) -
-							((int64_t)chnk->timestamp.sec * 1000000LL + (int64_t)chnk->timestamp.usec) -
-							(int64_t)taskCfg->buffer_us +
-							(int64_t)taskCfg->outputBufferDacTime_us;
-
-//					ESP_LOGI(TAG, "before age: %lldus", age);
-					if (age < -(int64_t)taskCfg->buffer_us / 10LL) {	// if age gets younger than 1/10 of buffer then do a hard resync
-						initial_sync = 0;
-
-						ESP_LOGW(TAG, "need resync, skipping chnk. age: %lldus", age);
-
-						free(chnk->payload);
-						free(chnk);
-						chnk = NULL;
-
-						continue;
-					}
-					else if (age < -1099LL) {
-						//ESP_LOGI(TAG, "age: %lldus", age);
-
-						vTaskDelay( pdMS_TO_TICKS(-age / 1000LL) );	//((TickType_t)(-age / 1000LL));	// TODO: find better way to do a exact delay to age, skipping probably goes away afterwards
-					}
-					else if (age > 0) {
-						ESP_LOGW(TAG, "skipping chunk, age: %lldus", age);
-
-						free(chnk->payload);
-						free(chnk);
-						chnk = NULL;
-
-						continue;
-					}
-				}
-
-				// just for testing, print age
-//				if (server_now(&serverNow) >= 0) {
-//					age =   ((int64_t)serverNow.tv_sec * 1000000LL + (int64_t)serverNow.tv_usec) -
-//							((int64_t)chnk->timestamp.sec * 1000000LL + (int64_t)chnk->timestamp.usec) -
-//							(int64_t)taskCfg->buffer_us +
-//							(int64_t)taskCfg->outputBufferDacTime_us;
-//
-//					ESP_LOGI(TAG, "after age: %lldus", age);
-//				}
-
-				int bytesWritten = 0;
-				while ( bytesWritten < chnk->size ) {
-					bytesWritten += raw_stream_write(*(taskCfg->p_raw_stream_writer), chnk->payload, chnk->size);
-					if (bytesWritten < chnk->size) {
-						ESP_LOGE(TAG, "i2s raw writer ring buf full");
-						vTaskDelay(100);
-					}
-				}
-
-				free(chnk->payload);
-				free(chnk);
-				chnk = NULL;
-			}
-			else if (server_now(&serverNow) >= 0) {		// hard syncing
-				// calc age in µs
+			if (server_now(&serverNow) >= 0) {
 				age =   ((int64_t)serverNow.tv_sec * 1000000LL + (int64_t)serverNow.tv_usec) -
 						((int64_t)chnk->timestamp.sec * 1000000LL + (int64_t)chnk->timestamp.usec) -
 						(int64_t)taskCfg->buffer_us +
 						(int64_t)taskCfg->outputBufferDacTime_us;
 
-//				ESP_LOGI(TAG, "age: %lldus, %lldus, %lldus, %lldus, %lldus", age,
-//																			 (int64_t)serverNow.tv_sec * 1000000LL + (int64_t)serverNow.tv_usec,
-//																			 (int64_t)wireChnk->timestamp.sec * 1000000LL + (int64_t)wireChnk->timestamp.usec,
-//																			 (int64_t)taskCfg->buffer_us,
-//																			 (int64_t)taskCfg->outputBufferDacTime_us);
+				if ((age < 0) && (init == 0))
+//				if (age < 0)
+				{
+					//alarmValSub = 220;//60;	// TODO: found by trial and error, how to get this dynamically? It is highly depended on system load and load distribution across processors
+					tg0_timer1_start((-age * 10) - (alarmValSubBase + alarmValSub));	// alarm a little earlier to account for context switch duration from freeRTOS
+					//tg0_timer1_start(-age * scaleFactor);	// alarm a little earlier to account for context switch duration from freeRTOS
 
-				if (age < -(int64_t)taskCfg->buffer_us) {
+					// Wait to be notified of an interrupt.
+					xTaskNotifyWait( pdFALSE,    		// Don't clear bits on entry.
+									 ULONG_MAX,        	// Clear all bits on exit.
+									 &notifiedValue, 	// Stores the notified value.
+									 portMAX_DELAY
+									);
+
+					// get timer value so we can get the real age
+					timer_get_counter_value(TIMER_GROUP_0, TIMER_1, &timer_val);
+					timer_pause(TIMER_GROUP_0, TIMER_1);
+				}
+				else if (age > 0) {
+					free(chnk->payload);
+					free(chnk);
+					chnk = NULL;
+
+					init = 0;
+
+					ESP_LOGW(TAG, "skip chunk, %lld", age);
+
+					/*
 					// fast forward
-					ESP_LOGW(TAG, "fast forward, age: %lldus", age);
+					while(1) {
+						ret = xQueueReceive(pcmChunkQueueHandle, &chnk, pdMS_TO_TICKS(1000) );
 
+						if (ret == pdPASS) {
+							age =   ((int64_t)serverNow.tv_sec * 1000000LL + (int64_t)serverNow.tv_usec) -
+									((int64_t)chnk->timestamp.sec * 1000000LL + (int64_t)chnk->timestamp.usec) -
+									(int64_t)taskCfg->buffer_us +
+									(int64_t)taskCfg->outputBufferDacTime_us;
+
+							if (age > 0) {
+								free(chnk->payload);
+								free(chnk);
+								chnk = NULL;
+							}
+							else {
+								break;
+							}
+						}
+						else {
+							chnk = NULL;
+
+							break;
+						}
+					}
+					*/
+
+//					memset(avg_window, 0, sizeof(avg_window));
+//					avg_window_cnt = 0;
+
+//					ageAcummulated_us = 0;
+//					alarmValSub = 0;
+//					alarmValSubCnt = 0;
+
+
+
+//					scaleFactor = 1.0;
+
+					continue;
+				}
+
+//				ESP_LOGI(TAG, "\ns %d a %d s %d a %d\ns %d a %d s %d a %d",
+//									rb_get_size(audio_element_get_input_ringbuf(raw_stream_writer_to_i2s)), rb_bytes_filled(audio_element_get_input_ringbuf(raw_stream_writer_to_i2s)),
+//									rb_get_size(audio_element_get_output_ringbuf(raw_stream_writer_to_i2s)), rb_bytes_filled(audio_element_get_output_ringbuf(raw_stream_writer_to_i2s)),
+//									rb_get_size(audio_element_get_input_ringbuf(i2s_stream_writer)), rb_bytes_filled(audio_element_get_input_ringbuf(i2s_stream_writer)),
+//									rb_get_size(audio_element_get_output_ringbuf(i2s_stream_writer)), rb_bytes_filled(audio_element_get_output_ringbuf(i2s_stream_writer)));
+
+				p_payload = chnk->payload;
+				size = chnk->size;
+
+//				realAge = ((int64_t)timer_val - (-age) * 10) / 10;
+//				ageAcummulated_us += realAge;
+
+				if (init == 0) {
+					realAge = ((int64_t)timer_val - (-age) * 10) / 10;
+					if (realAge != 0) {
+						// free chunk so we can get next one
+						free(chnk->payload);
+						free(chnk);
+						chnk = NULL;
+
+						continue;
+					}
+
+					init = 1;
+
+					firstAge = realAge;
+				}
+				else {
+					realAge = age;
+				}
+
+/*
+				skippedSamples = 0;
+				if ((ageAcummulated_us < 0) && (ageAcummulated_us >= -chunkDuration_us)) {
+					skippedSamples = (ageAcummulated_us * 1000LL) / sampleDuration_ns;		// will be a negative number, don't forget to invert wenn sending data through raw_stream_write()
+					ageAcummulated_us += (-skippedSamples * sampleDuration_ns / 1000);
+
+					// TODO: genmerate new payload where every xth sample stretched
+					// insert additional samples to keep in sync, this isn't perfect though
+					raw_stream_write(*(taskCfg->p_raw_stream_writer), p_payload, 4 * -skippedSamples);
+//					bytesWritten = 0;
+//					bytesWritten += raw_stream_write(*(taskCfg->p_raw_stream_writer), p_payload, 4 * -skippedSamples);
+//					if (bytesWritten < -skippedSamples) {
+//						ESP_LOGE(TAG, "i2s raw writer ring buf full");
+//					}
+				}
+				else if ((ageAcummulated_us > 0) && (ageAcummulated_us <= chunkDuration_us)) {
+					skippedSamples = (ageAcummulated_us * 1000LL) / sampleDuration_ns;
+					ageAcummulated_us -= (skippedSamples * sampleDuration_ns / 1000);
+
+//					if (ageAcummulated_us * 1000 > (sampleDuration_ns / 2)) {
+//						if (skippedSamples < ((chunkDuration_us * 1000) / sampleDuration_ns - 1)) {
+//							skippedSamples += 1;
+//
+//							ageAcummulated_us -= (1 * sampleDuration_ns / 1000);
+//						}
+//					}
+
+					p_payload += (4 * skippedSamples);
+					size -= (4 * skippedSamples);
+				}
+				else if (ageAcummulated_us > chunkDuration_us) {
 					free(chnk->payload);
 					free(chnk);
 					chnk = NULL;
-				}
-				else if ((age >= -AGE_THRESHOLD ) && ( age <= 0 )) {
-					initial_sync++;
 
-					free(chnk->payload);
-					free(chnk);
-					chnk = NULL;
-				}
-				else if (age > 0 ) {
-					ESP_LOGW(TAG, "too old, age: %lldus", age);
+					ageAcummulated_us -= chunkDuration_us;
 
-					initial_sync = 0;
+					ESP_LOGW(TAG, "skip chunk");
 
-					free(chnk->payload);
-					free(chnk);
-					chnk = NULL;
+					continue;
 				}
+*/
+
+
+				skippedSamples = 0;
+				if (firstAge < 0) {
+					skippedSamples = -1;//(ageAcummulated_us * 1000LL) / sampleDuration_ns;		// will be a negative number, don't forget to invert wenn sending data through raw_stream_write()
+					firstAge += (-skippedSamples * sampleDuration_ns / 1000);
+
+					ESP_LOGW(TAG, "inserting");
+
+					// TODO: genmerate new payload where every xth sample stretched
+					// insert additional samples to get in sync, this isn't perfect though
+					bytesWritten = 0;
+					bytesWritten += raw_stream_write(*(taskCfg->p_raw_stream_writer), p_payload, 4 * -skippedSamples);
+					if (bytesWritten < -skippedSamples) {
+						ESP_LOGE(TAG, "i2s raw writer ring buf full");
+					}
+				}
+				else if (firstAge > sampleDuration_ns / 1000) {
+					skippedSamples = 1;
+					firstAge -= (skippedSamples * sampleDuration_ns / 1000);
+
+					p_payload += (4 * skippedSamples);
+					size -= (4 * skippedSamples);
+
+					ESP_LOGW(TAG, "skipping");
+				}
+
+
+//				ESP_LOGI(TAG, "%d", rb_bytes_filled(audio_element_get_output_ringbuf(raw_stream_writer_to_i2s)));
+
+				// write data to decoder
+				bytesWritten = 0;
+				bytesWritten += raw_stream_write(*(taskCfg->p_raw_stream_writer), p_payload, size);
+				if (bytesWritten < size) {
+					ESP_LOGE(TAG, "i2s raw writer ring buf full");
+				}
+
+//				sample_count++;
+//				if ((sample_count % 256) == 0) {
+//					init = 0;	// resync
+//				}
+
+//				if (rb_bytes_filled(audio_element_get_output_ringbuf(raw_stream_writer_to_i2s)) >= 12 * 1024) {
+//					audio_pipeline_resume(playbackPipeline);
+//				}
+
+//				raw_stream_write(*(taskCfg->p_raw_stream_writer), p_payload, size);
+
+//				avg_window[avg_window_cnt++] = realAge;
+//				if (avg_window_cnt >= AVG_BUF_SIZE) {
+//					avg_window_cnt = 0;
+//				}
+
+//				memcpy(tmpAvg, avg_window, sizeof(avg_window));
+//				quick_sort_int32(tmpAvg, 0, AVG_BUF_SIZE);
+//				alarmValAvg = tmpAvg[AVG_BUF_SIZE/2];
+
+				/*
+				int i;
+				alarmValAvg = 0;
+				for (i=0; i<AVG_BUF_SIZE; i++) {
+					alarmValAvg += avg_window[i];
+				}
+				alarmValAvg /= i;
+				*/
+
+
+				//alarmValAvg = realAge;
+
+
+				// control function to adjust early alarm value
+//				alarmValSubCnt++;
+//				if ((alarmValSubCnt % 1) == 0)
+//				{	// check every x samples
+//					if (alarmValAvg < -1) {
+//						alarmValSub--;
+//					}
+//					else if (alarmValAvg > 1) {
+//						alarmValSub++;
+//					}
+//
+//
+//					int k = 10;
+//					if (ageAcummulated_us < -1) {
+//						alarmValSub -= k;
+//					}
+//					else if (ageAcummulated_us > 1) {
+//						alarmValSub += k;
+//					}
+//				}
+
+
+				/*
+				// get gradient
+				gradient = (float)(ageAcummulated_us - ageAcummulatedOld_us) / ((float)sampleDuration_ns / 1000.0);
+				if (gradient > 0.0) {
+					alarmValSub++;
+				}
+				else if (gradient < 0.0) {
+					alarmValSub--;
+				}
+				*/
+
+//				if (realAge < minRealAge) {
+//					minRealAge = realAge;
+//				}
+//
+//				if (realAge > maxRealAge) {
+//					maxRealAge = realAge;
+//				}
+
+//				ESP_LOGI(TAG, "%d %d %d", realAge, firstAge, rb_bytes_filled(audio_element_get_output_ringbuf(raw_stream_writer_to_i2s)));
+				ESP_LOGI(TAG, "%d %d", realAge, firstAge);
+//				ESP_LOGI(TAG, "%d, %d, %d, %d, %d, %f", alarmValAvg, realAge, ageAcummulated_us, alarmValSub, skippedSamples, gradient);
+//				ESP_LOGI(TAG, "%lldus", age);
+
+//				ageAcummulatedOld_us = ageAcummulated_us;
+//				realAgeOld = realAge;
 			}
 			else {
+				//ESP_LOGW(TAG, "couldn't get server now");
+
 				vTaskDelay( pdMS_TO_TICKS(10) );
+
+				continue;
 			}
+
+			free(chnk->payload);
+			free(chnk);
+			chnk = NULL;
 		}
 		else {
-			ESP_LOGE(TAG, "Couldn't get PCM chunk");
+			ESP_LOGE(TAG, "Couldn't get PCM chunk, recv: messages waiting %d, %d", uxQueueMessagesWaiting(pcmChunkQueueHandle), uxQueueMessagesWaiting(timestampQueueHandle));
+
+//			ESP_LOGI(TAG, "\n1: s %d f %d s %d f %d\n2: s %d f %d s %d f %d\n3: s %d f %d s %d f %d",
+//					rb_get_size(audio_element_get_input_ringbuf(raw_stream_writer_to_decoder)), rb_bytes_filled(audio_element_get_input_ringbuf(raw_stream_writer_to_decoder)),
+//					rb_get_size(audio_element_get_output_ringbuf(raw_stream_writer_to_decoder)), rb_bytes_filled(audio_element_get_output_ringbuf(raw_stream_writer_to_decoder)),
+//					rb_get_size(audio_element_get_input_ringbuf(decoder)), rb_bytes_filled(audio_element_get_input_ringbuf(decoder)),
+//					rb_get_size(audio_element_get_output_ringbuf(decoder)), rb_bytes_filled(audio_element_get_output_ringbuf(decoder)),
+//					rb_get_size(audio_element_get_input_ringbuf(raw_stream_reader)), rb_bytes_filled(audio_element_get_input_ringbuf(raw_stream_reader)),
+//					rb_get_size(audio_element_get_output_ringbuf(raw_stream_reader)), rb_bytes_filled(audio_element_get_output_ringbuf(raw_stream_reader)));
+
+			// probably the stream stopped, so we need to reset decoder's buffers here
+			audio_element_reset_output_ringbuf(raw_stream_writer_to_decoder);
+			audio_element_reset_input_ringbuf(raw_stream_writer_to_decoder);
+
+			audio_element_reset_output_ringbuf(decoder);
+			audio_element_reset_input_ringbuf(decoder);
+
+			audio_element_reset_output_ringbuf(raw_stream_writer_to_i2s);
+			audio_element_reset_input_ringbuf(raw_stream_writer_to_i2s);
+
+			audio_element_reset_output_ringbuf(i2s_stream_writer);
+			audio_element_reset_input_ringbuf(i2s_stream_writer);
+
+			wirechnkCnt = 0;
+			pcmchnkCnt = 0;
+
+			init = 0;
+
+			ageAcummulated_us = 0;
+			memset(avg_window, 0, sizeof(avg_window));
+			avg_window_cnt = 0;
+
+			alarmValSub = 0;
+			alarmValSubCnt = 0;
+
+			vTaskDelay( pdMS_TO_TICKS(100) );
 		}
 	}
 }
@@ -587,10 +1070,10 @@ static void http_get_task(void *pvParameters) {
     struct timeval tmpDiffToServer;
     uint8_t diffBufCnt = 0;
     const int64_t outputBufferDacTime_us = DAC_OUT_BUFFER_TIME_US;	// in ms
-    TaskHandle_t syncTask = NULL;
     snapcast_sync_task_cfg_t snapcastTaskCfg;
 	struct timeval lastTimeSync = { 0, 0 };
 	uint8_t bufferFull = false;
+	wire_chunk_message_t wire_chunk_message_last = {{0,0}, 0, NULL};
     
     p_raw_stream_writer = httpTaskCfg->p_raw_stream_writer_to_decoder;
 
@@ -853,7 +1336,13 @@ static void http_get_task(void *pvParameters) {
 							strcpy(codecString, codec_header_message.codec);
 						}
 
+						ESP_LOGI(TAG, "syncing clock to server");
+						tv1.tv_sec = base_message.sent.sec;
+						tv1.tv_usec = base_message.sent.usec;
+						settimeofday(&tv1, NULL);
+
 						codec_header_message_free(&codec_header_message);
+
 						received_header = true;
 
 					break;
@@ -876,41 +1365,37 @@ static void http_get_task(void *pvParameters) {
 
 						//ESP_LOGI(TAG, "wire chnk with size: %d, timestamp %d.%d", wire_chunk_message.size, wire_chunk_message.timestamp.sec, wire_chunk_message.timestamp.usec);
 
+//						struct timeval tv_d1, tv_d2, tv_d3;
+//						tv_d1.tv_sec = wire_chunk_message.timestamp.sec;
+//						tv_d1.tv_usec = wire_chunk_message.timestamp.usec;
+//						tv_d2.tv_sec = wire_chunk_message_last.timestamp.sec;
+//						tv_d2.tv_usec = wire_chunk_message_last.timestamp.usec;
+//						timersub(&tv_d1, &tv_d2, &tv_d3);
+//						ESP_LOGI(TAG, "chunk duration %ld.%06ld", tv_d3.tv_sec, tv_d3.tv_usec);
+
+						wire_chunk_message_last.timestamp = wire_chunk_message.timestamp;
+
 						// store chunk's timestamp, decoder callback will need it later
 						tv_t timestamp;
 						timestamp = wire_chunk_message.timestamp;
 
-						int bytesWritten = 0;
+						//ESP_LOGI(TAG, "got wire chunk");
 
 						wirechnkCnt++;
 						//ESP_LOGI(TAG, "wirechnkCnt: %lld", wirechnkCnt);
 
-						while ( bytesWritten < wire_chunk_message.size ) {
-							bytesWritten += raw_stream_write(*p_raw_stream_writer, wire_chunk_message.payload, wire_chunk_message.size);
-							if (bytesWritten < wire_chunk_message.size) {
-								ESP_LOGE(TAG, "wirechnk decode ring buf full");
-								vTaskDelay(100);
-							}
-						}
-
-						if (xQueueSendToBack( timestampQueueHandle, &timestamp, pdMS_TO_TICKS(3000)) == pdTRUE) {
-							// write encoded data to decoder pipeline, callback will trigger when it's finished
-							// also we do a check if all data was written successfully
-//							int bytesWritten = 0;
-//
-//							wirechnkCnt++;
-//							//ESP_LOGI(TAG, "wirechnkCnt: %lld", wirechnkCnt);
-//
-//							while ( bytesWritten < wire_chunk_message.size ) {
-//								bytesWritten += raw_stream_write(*p_raw_stream_writer, wire_chunk_message.payload, wire_chunk_message.size);
-//								if (bytesWritten < wire_chunk_message.size) {
-//									ESP_LOGE(TAG, "wirechnk decode ring buf full");
-//									vTaskDelay(100);
-//								}
-//							}
+						int bytesWritten = 0;
+						bytesWritten += raw_stream_write(*p_raw_stream_writer, wire_chunk_message.payload, wire_chunk_message.size);
+						if (bytesWritten < wire_chunk_message.size) {
+							ESP_LOGE(TAG, "wirechnk decode ring buf full");
 						}
 						else {
-							ESP_LOGW(TAG, "timestamp queue full, dropping data ...");
+							if (xQueueSendToBack( timestampQueueHandle, &timestamp, pdMS_TO_TICKS(3000)) == pdTRUE) {
+								//ESP_LOGI(TAG, "wrote wirechunk timestamp");
+							}
+							else {
+								ESP_LOGW(TAG, "timestamp queue full, messages waiting %d, dropping data ...", uxQueueMessagesWaiting(timestampQueueHandle));
+							}
 						}
 
 						wire_chunk_message_free(&wire_chunk_message);
@@ -941,22 +1426,17 @@ static void http_get_task(void *pvParameters) {
 						muteCH[2] = server_settings_message.muted;
 						muteCH[3] = server_settings_message.muted;
 
-						ESP_LOGI(TAG, "syncing clock to server");
-						tv1.tv_sec = base_message.sent.sec;
-						tv1.tv_usec = base_message.sent.usec;
-						settimeofday(&tv1, NULL);
-
 						// Volume setting using ADF HAL abstraction
 						audio_hal_set_mute(board_handle->audio_hal, server_settings_message.muted);
 						audio_hal_set_volume(board_handle->audio_hal, server_settings_message.volume);
 
-						if (syncTask == NULL) {
+						if (syncTaskHandle == NULL) {
 							ESP_LOGI(TAG, "Start snapcast_sync_task");
 
 							snapcastTaskCfg.p_raw_stream_writer = httpTaskCfg->p_raw_stream_writer_to_i2s;
 							snapcastTaskCfg.outputBufferDacTime_us = outputBufferDacTime_us;
 							snapcastTaskCfg.buffer_us = (int64_t)buffer_ms * 1000LL;
-							xTaskCreatePinnedToCore(&snapcast_sync_task, "snapcast_sync_task", 4*4096, &snapcastTaskCfg, SYNC_TASK_PRIORITY, &syncTask, SYNC_TASK_CORE_ID);
+							xTaskCreatePinnedToCore(snapcast_sync_task, "snapcast_sync_task", 8 * 1024, &snapcastTaskCfg, SYNC_TASK_PRIORITY, &syncTaskHandle, SYNC_TASK_CORE_ID);
 						}
 
 					break;
@@ -1091,9 +1571,15 @@ static void http_get_task(void *pvParameters) {
             }
         }
 
-        if (syncTask != NULL) {
-			vTaskDelete(syncTask);
-			syncTask = NULL;
+        if (syncTaskHandle != NULL) {
+			vTaskDelete(syncTaskHandle);
+			syncTaskHandle = NULL;
+
+			xQueueReset(timestampQueueHandle);
+			//xQueueReset(pcmChunkQueueHandle);
+
+			wirechnkCnt = 0;
+			pcmchnkCnt = 0;
 		}
 
         ESP_LOGI(TAG, "... closing socket\r\n");
@@ -1168,72 +1654,117 @@ void set_time_from_sntp() {
 }
 
 
-int flac_decoder_write_cb(audio_element_handle_t el, char *buffer, int len, TickType_t ticks_to_wait, void *context) {
+// @ 48kHz, 2ch, 16bit audio data and 24ms wirechunks (hardcoded for now) we expect 0.024 * 2 * 16/8 * 48000 = 4608 Bytes
+#define WIRE_CHUNK_DURATION_MS		24UL		// stream read chunk size [ms]
+#define SAMPLE_RATE					48000UL
+#define CHANNELS					2UL
+#define BIT_WIDTH					(16 / 8)
+
+
+/**
+ *
+ */
+static void wirechunk_to_pcm_timestamp_task(void *pvParameters) {
 	wire_chunk_message_t *pcm_chunk_message;
 	tv_t timestamp;
-	int ret = len;
+	const unsigned int size_expect = (WIRE_CHUNK_DURATION_MS * CHANNELS * BIT_WIDTH * SAMPLE_RATE) / 1000;
+	audio_element_handle_t *p_raw_stream_reader = (audio_element_handle_t *)pvParameters;
+	int itemsRead = 0;
 
-	//ESP_LOGI(TAG, "flac_decoder_write_cb: got buffer with length %d", len);
+	while (1) {
+		if (xQueueReceive( timestampQueueHandle, &timestamp, pdMS_TO_TICKS(10000) ) == pdPASS) {
+			//ESP_LOGI(TAG, "r: %d", uxQueueMessagesWaiting(timestampQueueHandle));
 
-//	audio_element_info_t music_info = {0};
-//	audio_element_getinfo(el, &music_info);
-//	ESP_LOGI(TAG, "[ cb ] Receive music info from %s decoder, sample_rates=%d, bits=%d, ch=%d, total_bytes: %lld, byte_pos:%lld",
-//			 codecString, music_info.sample_rates, music_info.bits, music_info.channels, music_info.total_bytes, music_info.byte_pos);
+			pcm_chunk_message = (wire_chunk_message_t *)malloc(sizeof(wire_chunk_message_t));
+			if (pcm_chunk_message == NULL) {
+				ESP_LOGE(TAG, "wirechunk_to_pcm_timestamp_task: Failed to allocate memory for pcm chunk message");
 
+				continue;
+			}
 
-	if (xQueueReceive( timestampQueueHandle, &timestamp, 0 ) == pdPASS) {
-		pcm_chunk_message = (wire_chunk_message_t *)malloc(sizeof(wire_chunk_message_t));
-		if (pcm_chunk_message == NULL) {
-			ESP_LOGE(TAG, "flac_decoder_write_cb: Failed to allocate memory for pcm chunk message");
+			pcm_chunk_message->payload = (char *)malloc(sizeof(char) * size_expect);
+			if (pcm_chunk_message->payload == NULL) {
+				ESP_LOGE(TAG, "wirechunk_to_pcm_timestamp_task: Failed to allocate memory for pcm chunk payload");
 
-			return AEL_IO_FAIL;
-		}
+				free(pcm_chunk_message);
 
-		pcm_chunk_message->payload = (char *)malloc(sizeof(char) * len);
-		if (pcm_chunk_message->payload == NULL) {
-			ESP_LOGE(TAG, "flac_decoder_write_cb: Failed to allocate memory for pcm chunk payload");
+				continue;
+			}
 
-			return AEL_IO_FAIL;
-		}
+			pcm_chunk_message->size = size_expect;
+			pcm_chunk_message->timestamp = timestamp;
 
-		pcm_chunk_message->size = len;
-		pcm_chunk_message->timestamp = timestamp;
-		memcpy(pcm_chunk_message->payload, buffer, len);
+//			ESP_LOGI(TAG, "\n1: s %d f %d s %d f %d\n2: s %d f %d s %d f %d\n3: s %d f %d s %d f %d",
+//									rb_get_size(audio_element_get_input_ringbuf(raw_stream_writer_to_decoder)), rb_bytes_filled(audio_element_get_input_ringbuf(raw_stream_writer_to_decoder)),
+//									rb_get_size(audio_element_get_output_ringbuf(raw_stream_writer_to_decoder)), rb_bytes_filled(audio_element_get_output_ringbuf(raw_stream_writer_to_decoder)),
+//									rb_get_size(audio_element_get_input_ringbuf(decoder)), rb_bytes_filled(audio_element_get_input_ringbuf(decoder)),
+//									rb_get_size(audio_element_get_output_ringbuf(decoder)), rb_bytes_filled(audio_element_get_output_ringbuf(decoder)),
+//									rb_get_size(audio_element_get_input_ringbuf(raw_stream_reader)), rb_bytes_filled(audio_element_get_input_ringbuf(raw_stream_reader)),
+//									rb_get_size(audio_element_get_output_ringbuf(raw_stream_reader)), rb_bytes_filled(audio_element_get_output_ringbuf(raw_stream_reader)));
 
-		ret = len;
-		if( xQueueSendToBack( pcmChunkQueueHandle, &pcm_chunk_message, pdMS_TO_TICKS(5)) != pdPASS ) {
-			ESP_LOGE(TAG, "flac_decoder_write_cb: Failed to post the message");
+			itemsRead = raw_stream_read(*p_raw_stream_reader, pcm_chunk_message->payload, size_expect);
+			if (itemsRead < size_expect) {
+				// probably the stream stopped, so we need to reset decoder's buffers here
+				audio_element_reset_output_ringbuf(raw_stream_writer_to_decoder);
+				audio_element_reset_input_ringbuf(raw_stream_writer_to_decoder);
 
-			free(pcm_chunk_message->payload);
-			free(pcm_chunk_message);
+				audio_element_reset_output_ringbuf(decoder);
+				audio_element_reset_input_ringbuf(decoder);
 
-			ret = AEL_IO_FAIL;
-		}
-		else {
-			pcmchnkCnt++;
-			//if ((wirechnkCnt - pcmchnkCnt) > 3)
-			{
-				//ESP_LOGW(TAG, "diff: %lld", wirechnkCnt - pcmchnkCnt);
+				audio_element_reset_output_ringbuf(raw_stream_writer_to_i2s);
+				audio_element_reset_input_ringbuf(raw_stream_writer_to_i2s);
+
+				audio_element_reset_output_ringbuf(i2s_stream_writer);
+				audio_element_reset_input_ringbuf(i2s_stream_writer);
+
+				wirechnkCnt = 0;
+				pcmchnkCnt = 0;
+
+				xQueueReset(timestampQueueHandle);
+
+				ESP_LOGE(TAG, "wirechunk_to_pcm_timestamp_task: read %d, expected %d", itemsRead, size_expect);
+			}
+			else {
+				if (xQueueSendToBack( pcmChunkQueueHandle, &pcm_chunk_message, pdMS_TO_TICKS(1000)) != pdTRUE) {
+					ESP_LOGW(TAG, "wirechunk_to_pcm_timestamp_task: send: pcmChunkQueue full, messages waiting %d", uxQueueMessagesWaiting(pcmChunkQueueHandle));
+				}
 			}
 		}
-	}
-	else {
-		ESP_LOGW(TAG, "flac_decoder_write_cb: failed to get timestamp for it");
+		else {
+			// probably the stream stopped, so we need to reset decoder's buffers here
+			audio_element_reset_output_ringbuf(raw_stream_writer_to_decoder);
+			audio_element_reset_input_ringbuf(raw_stream_writer_to_decoder);
 
-		ret = AEL_IO_FAIL;
+			audio_element_reset_output_ringbuf(decoder);
+			audio_element_reset_input_ringbuf(decoder);
+
+			audio_element_reset_output_ringbuf(raw_stream_writer_to_i2s);
+			audio_element_reset_input_ringbuf(raw_stream_writer_to_i2s);
+
+			audio_element_reset_output_ringbuf(i2s_stream_writer);
+			audio_element_reset_input_ringbuf(i2s_stream_writer);
+
+			wirechnkCnt = 0;
+			pcmchnkCnt = 0;
+
+			xQueueReset(timestampQueueHandle);
+
+			ESP_LOGW(TAG, "wirechunk_to_pcm_timestamp_task: failed to get timestamp for it, messages waiting %d, %d", uxQueueMessagesWaiting(timestampQueueHandle), uxQueueMessagesWaiting(pcmChunkQueueHandle));
+
+			vTaskDelay(pdMS_TO_TICKS(100));
+		}
 	}
 
-	return ret;
+	// should never get here ...
+	return;
 }
+
+
 
 /**
  *
  */
 void app_main(void) {
-    audio_pipeline_handle_t flacDecodePipeline;
-    audio_element_handle_t raw_stream_writer_to_decoder, decoder;
-    audio_pipeline_handle_t playbackPipeline;
-    audio_element_handle_t raw_stream_writer_to_i2s, i2s_stream_writer;
     esp_err_t ret;
     uint8_t base_mac[6];
     http_task_cfg_t httpTaskCfg = {NULL, NULL};
@@ -1262,52 +1793,64 @@ void app_main(void) {
     ESP_LOGI(TAG, "Create audio pipeline for decoding");
     audio_pipeline_cfg_t flac_dec_pipeline_cfg = DEFAULT_AUDIO_PIPELINE_CONFIG();
     flacDecodePipeline = audio_pipeline_init(&flac_dec_pipeline_cfg);
-    flac_dec_pipeline_cfg.rb_size = 16 * 4096;	// TODO: how much is really needed?
+    //flac_dec_pipeline_cfg.rb_size = 16 * 4096;	// TODO: how much is really needed?
     AUDIO_NULL_CHECK(TAG, flacDecodePipeline, return);
 
     ESP_LOGI(TAG, "Create raw stream to write data from snapserver to decoder");
     raw_stream_cfg_t raw_1_cfg = RAW_STREAM_CFG_DEFAULT();
     raw_1_cfg.type = AUDIO_STREAM_WRITER;
-    raw_1_cfg.out_rb_size = 16 * 4096;	// TODO: how much is really needed?
+    raw_1_cfg.out_rb_size = 16 * 1024;	// TODO: how much is really needed?
     raw_stream_writer_to_decoder = raw_stream_init(&raw_1_cfg);
+    audio_element_set_output_timeout(raw_stream_writer_to_decoder, pdMS_TO_TICKS(1000));
 
     ESP_LOGI(TAG, "Create flac decoder to decode flac file and set custom write callback");
 	flac_decoder_cfg_t flac_cfg = DEFAULT_FLAC_DECODER_CONFIG();
 	flac_cfg.task_prio = FLAC_DECODER_PRIORITY;
 	flac_cfg.task_core = FLAC_DECODER_CORE_ID;
-	flac_cfg.out_rb_size = 16 * 4096;	// TODO: how much is really needed?
+	flac_cfg.out_rb_size = 16 * 1024;	// TODO: how much is really needed?
 	decoder = flac_decoder_init(&flac_cfg);
-	audio_element_set_write_cb(decoder, flac_decoder_write_cb, NULL);
+	//decodedPcmDataRingbuffer = xRingbufferCreate(RINGBUF_SIZE, RINGBUF_TYPE_BYTEBUF);	// create ringbuffer used to exchange data between flac decoder and timestamp task
+	//audio_element_set_write_cb(decoder, flac_decoder_write_cb, &decodedPcmDataRingbuffer);
+
+    ESP_LOGI(TAG, "Create raw stream to read data from decoder");
+    raw_stream_cfg_t raw_3_cfg = RAW_STREAM_CFG_DEFAULT();
+    raw_3_cfg.type = AUDIO_STREAM_READER;
+    //raw_3_cfg.out_rb_size = 5 * 4608;	// TODO: how much is really needed?
+    raw_stream_reader = raw_stream_init(&raw_3_cfg);
+    audio_element_set_input_timeout(raw_stream_reader, pdMS_TO_TICKS(1000));
 
     ESP_LOGI(TAG, "Register all elements to audio pipeline");
     audio_pipeline_register(flacDecodePipeline, raw_stream_writer_to_decoder, "raw_1");
     audio_pipeline_register(flacDecodePipeline, decoder, "decoder");
+    audio_pipeline_register(flacDecodePipeline, raw_stream_reader, "raw_3");
 
-    ESP_LOGI(TAG, "Link it together [snapclient]-->raw_1-->decoder");
-	const char *link_tag[2] = {"raw_1", "decoder"};
-    audio_pipeline_link(flacDecodePipeline, &link_tag[0], 2);
+    ESP_LOGI(TAG, "Link it together [snapclient]-->raw_1-->decoder --> raw_3");
+	const char *link_tag[] = {"raw_1", "decoder", "raw_3"};
+    audio_pipeline_link(flacDecodePipeline, &link_tag[0], 3);
 
     ESP_LOGI(TAG, "Create audio pipeline for playback");
 	audio_pipeline_cfg_t playback_pipeline_cfg = DEFAULT_AUDIO_PIPELINE_CONFIG();
-	playback_pipeline_cfg.rb_size = 16 * 4096;	// TODO: how much is really needed?
+	//playback_pipeline_cfg.rb_size = 16 * 4096;	// TODO: how much is really needed?
 	playbackPipeline = audio_pipeline_init(&playback_pipeline_cfg);
 	AUDIO_NULL_CHECK(TAG, playbackPipeline, return);
 
     ESP_LOGI(TAG, "Create raw stream to write data from decoder to i2s");
     raw_stream_cfg_t raw_2_cfg = RAW_STREAM_CFG_DEFAULT();
     raw_2_cfg.type = AUDIO_STREAM_WRITER;
-    raw_2_cfg.out_rb_size = 16 * 4096;	// TODO: how much is really needed?
+    raw_2_cfg.out_rb_size = 4608 * 3;//36 * 4;	// TODO: how much is really needed?	4 * 24ms * 48000 Hz
     raw_stream_writer_to_i2s = raw_stream_init(&raw_2_cfg);
+    audio_element_set_output_timeout(raw_stream_writer_to_i2s, pdMS_TO_TICKS(1000));
 
     ESP_LOGI(TAG, "Create i2s stream to write data to codec chip");
 	i2s_stream_cfg_t i2s_cfg = I2S_STREAM_CFG_DEFAULT();
 	//i2s_cfg.task_stack = I2S_STREAM_TASK_STACK * 2;
+	//i2s_cfg.i2s_config.intr_alloc_flags = ESP_INTR_FLAG_LEVEL3 | ESP_INTR_FLAG_IRAM;
 	i2s_cfg.i2s_config.sample_rate = 48000;
-	i2s_cfg.i2s_config.dma_buf_count = 4;
-	i2s_cfg.i2s_config.dma_buf_len = 410;
-	i2s_cfg.out_rb_size = 4 * 410;
+	i2s_cfg.i2s_config.dma_buf_count = 32 * 1;
+	i2s_cfg.i2s_config.dma_buf_len = 36 / 1;		// number of samples = 16bit * 2ch = 1 sample
+//	i2s_cfg.out_rb_size = 8 * 1024;
 	i2s_cfg.task_core = I2S_TASK_CORE_ID;
-	//i2s_cfg.task_prio = I2S_TASK_PRIORITY;
+	i2s_cfg.task_prio = I2S_TASK_PRIORITY;
 	i2s_stream_writer = i2s_stream_init(&i2s_cfg);
 
 	audio_pipeline_register(playbackPipeline, raw_stream_writer_to_i2s, "raw_2");
@@ -1368,7 +1911,13 @@ void app_main(void) {
 
 	httpTaskCfg.p_raw_stream_writer_to_decoder = &raw_stream_writer_to_decoder;
 	httpTaskCfg.p_raw_stream_writer_to_i2s = &raw_stream_writer_to_i2s;
-    xTaskCreatePinnedToCore(&http_get_task, "http_get_task", 4*4096, &httpTaskCfg, HTTP_TASK_PRIORITY, NULL, HTTP_TASK_CORE_ID);
+	xTaskCreatePinnedToCore(http_get_task, "http_get_task", 2*4096, &httpTaskCfg, HTTP_TASK_PRIORITY, NULL, HTTP_TASK_CORE_ID);
+
+	xTaskCreatePinnedToCore(wirechunk_to_pcm_timestamp_task, "timestamp_task", 2*4096, &raw_stream_reader, TIMESTAMP_TASK_PRIORITY, NULL, TIMESTAMP_TASK_CORE_ID);
+
+#if COLLECT_RUNTIME_STATS == 1
+    xTaskCreatePinnedToCore(stats_task, "stats", 4096, NULL, STATS_TASK_PRIO, NULL, tskNO_AFFINITY);
+#endif
 
     while (1) {
         audio_event_iface_msg_t msg;
@@ -1387,8 +1936,8 @@ void app_main(void) {
             audio_element_getinfo(decoder, &music_info);
 
             if (codecString != NULL) {
-				ESP_LOGI(TAG, "[ * ] Receive music info from %s decoder, sample_rates=%d, bits=%d, ch=%d, total_bytes: %lld, byte_pos:%lld",
-									 codecString, music_info.sample_rates, music_info.bits, music_info.channels, music_info.total_bytes, music_info.byte_pos);
+				ESP_LOGI(TAG, "[ * ] Receive music info from %s decoder, sample_rates=%d, bits=%d, ch=%d",
+									 codecString, music_info.sample_rates, music_info.bits, music_info.channels);
         	}
             else {
             	ESP_LOGI(TAG, "[ * ] Receive music info from decoder, sample_rates=%d, bits=%d, ch=%d",
@@ -1400,6 +1949,20 @@ void app_main(void) {
 
             continue;
         }
+
+//        if (msg.source_type == AUDIO_ELEMENT_TYPE_ELEMENT && msg.source == (void *) raw_stream_writer_to_i2s
+//			&& msg.cmd == AEL_MSG_CMD_REPORT_STATUS && ((int)msg.data == AEL_STATUS_STATE_PAUSED || (int)msg.data == AEL_STATUS_STATE_RUNNING))
+//		{
+//        	if ((int)msg.data == AEL_STATUS_STATE_PAUSED) {
+//        		ESP_LOGW(TAG, "raw_stream_writer_to_i2s pause event received");
+//        	}
+//        	else if ((int)msg.data == AEL_STATUS_STATE_RUNNING) {
+//        		ESP_LOGW(TAG, "raw_stream_writer_to_i2s run event received");
+//        	}
+//        	else {
+//        		ESP_LOGW(TAG, "raw_stream_writer_to_i2s unknown event received: %d", (int)msg.data);
+//        	}
+//		}
 
         /* Stop when the last pipeline element (i2s_stream_writer in this case) receives stop event */
         if (msg.source_type == AUDIO_ELEMENT_TYPE_ELEMENT && msg.source == (void *) i2s_stream_writer
@@ -1421,6 +1984,7 @@ void app_main(void) {
 
     audio_pipeline_unregister(flacDecodePipeline, raw_stream_writer_to_decoder);
     audio_pipeline_unregister(flacDecodePipeline, decoder);
+    audio_pipeline_unregister(flacDecodePipeline, raw_stream_reader);
     audio_pipeline_unregister(playbackPipeline, raw_stream_writer_to_i2s);
     audio_pipeline_unregister(playbackPipeline, i2s_stream_writer);
 
@@ -1435,6 +1999,7 @@ void app_main(void) {
     audio_pipeline_deinit(flacDecodePipeline);
     audio_element_deinit(raw_stream_writer_to_decoder);
     audio_element_deinit(decoder);
+    audio_element_deinit(raw_stream_reader);
 
     audio_pipeline_deinit(playbackPipeline);
     audio_element_deinit(raw_stream_writer_to_i2s);
