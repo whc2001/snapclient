@@ -226,7 +226,8 @@ int codec_header_message_deserialize(codec_header_message_t *msg, const char *da
         return 1;
     }
 
-    msg->codec = malloc(string_size + 1);
+    //msg->codec = malloc(string_size + 1);
+    msg->codec = heap_caps_malloc(string_size + 1, MALLOC_CAP_SPIRAM);
     if (!msg->codec) {
         return 2;
     }
@@ -241,7 +242,8 @@ int codec_header_message_deserialize(codec_header_message_t *msg, const char *da
         return 1;
     }
 
-    msg->payload = malloc(msg->size);
+    //msg->payload = malloc(msg->size);
+    msg->payload = heap_caps_malloc(msg->size, MALLOC_CAP_SPIRAM);
     if (!msg->payload) {
         return 2;
     }
