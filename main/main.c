@@ -109,11 +109,11 @@ char *codecString = NULL;
 // configMAX_PRIORITIES - 1
 
 // TODO: what are the best values here?
-#define SYNC_TASK_PRIORITY		6//configMAX_PRIORITIES - 2
+#define SYNC_TASK_PRIORITY		6//8//configMAX_PRIORITIES - 2
 #define SYNC_TASK_CORE_ID  		tskNO_AFFINITY//1//tskNO_AFFINITY
 
 #define TIMESTAMP_TASK_PRIORITY	6
-#define TIMESTAMP_TASK_CORE_ID 	tskNO_AFFINITY// 0//1//tskNO_AFFINITY
+#define TIMESTAMP_TASK_CORE_ID 	tskNO_AFFINITY//0//1//tskNO_AFFINITY
 
 #define HTTP_TASK_PRIORITY		6
 #define HTTP_TASK_CORE_ID  		tskNO_AFFINITY//0//tskNO_AFFINITY
@@ -154,7 +154,7 @@ SemaphoreHandle_t timeSyncSemaphoreHandle = NULL;
 
 SemaphoreHandle_t timer0_syncSampleSemaphoreHandle = NULL;
 
-#define DIFF_BUF_LEN					1
+#define DIFF_BUF_LEN 	1
 uint8_t diffBufCnt = 0;
 static int8_t diffBuffFull = 0;
 static struct timeval diffToServer = {0, 0};	// median diff to server in µs
@@ -184,8 +184,8 @@ static char buff[BUFF_LEN];
 //static audio_element_handle_t snapcast_stream;
 static char mac_address[18];
 
-#define MY_SSID		"....."
-#define MY_WPA2_PSK "xxxxxxxx"
+#define MY_SSID		"zuhause"
+#define MY_WPA2_PSK "dErtischlEr"
 
 static EventGroupHandle_t s_wifi_event_group;
 
@@ -818,7 +818,7 @@ static void stats_task(void *arg) {
 //    shortBuffer_.setSize(100);
 //    miniBuffer_.setSize(20);
 
-#define MAX_SHORT_BUFFER_COUNT	20
+#define MAX_SHORT_BUFFER_COUNT	200
 int64_t short_buffer[MAX_SHORT_BUFFER_COUNT];
 int64_t short_buffer_median[MAX_SHORT_BUFFER_COUNT];
 int short_buffer_cnt = 0;
@@ -831,6 +831,11 @@ int short_buffer_full = 0;
 
 int8_t currentDir = 0;
 
+
+// void rtc_clk_apll_enable(bool enable, uint32_t sdm0, uint32_t sdm1, uint32_t sdm2, uint32_t o_div);
+// apll_freq = xtal_freq * (4 + sdm2 + sdm1/256 + sdm0/65536)/((o_div + 2) * 2)
+// xtal == 40MHz on lyrat v4.3
+// I2S bit_clock = rate * (number of channels) * bits_per_sample
 void adjust_apll(int8_t direction) {
 	int sdm0, sdm1, sdm2, o_div;
 
@@ -1017,51 +1022,6 @@ static void snapcast_sync_task(void *pvParameters) {
 					continue;
 				}
 				else {
-					//if ((age < -2 * chunkDuration_us) || (age > 2 * chunkDuration_us) || (initialSync == 0)) {
-					if ((age < -2 * chunkDuration_us) || (age > 2 * chunkDuration_us) || (initialSync == 0)) {
-						free(chnk->payload);
-						free(chnk);
-						chnk = NULL;
-
-						struct timeval t;
-						get_diff_to_server(&t);
-						ESP_LOGW(TAG, "RESYNCING HARD %lldus, %lldus", age, ((int64_t)t.tv_sec * 1000000LL + (int64_t)t.tv_usec));
-//						ESP_LOGW(TAG, "RESYNCING HARD %lldus, %lldus", age);
-
-						//reset_diff_buffer();
-
-						if (initialSync == 1) {
-//							i2s_stop(i2s_cfg.i2s_port);
-//							i2s_zero_dma_buffer(i2s_cfg.i2s_port);
-
-							audio_element_reset_input_ringbuf(i2s_stream_writer);
-
-							// reset to normal playback speed
-							sdm0 = apll_predefine[5][2];
-							sdm1= apll_predefine[5][3];
-							sdm2 = apll_predefine[5][4];
-							o_div = apll_predefine[5][5];
-							rtc_clk_apll_enable(1, sdm0, sdm1, sdm2, o_div);
-
-							ESP_LOGW(TAG, "stop");
-						}
-
-						memset( short_buffer, 0, sizeof(short_buffer) );
-						short_buffer_cnt = 0;
-						short_buffer_full = 0;
-
-						initialSync = 0;
-						alarmValSub = 0;
-
-						continue;
-					}
-				}
-
-				int64_t age_expect;
-				// NOT 100% SURE ABOUT THE FOLLOWING CONTROL LOOP, PROBABLY BETTER WAYS TO DO IT, STILL TESTING
-				if (initialSync == 1)
-				{	// got initial sync, decrease / increase playback speed if age != 0
-
 					// TODO:
 					// BADAIX original code uses 3 buffers and median on them to do sample rate adjustment calculations
 					// so for sure there is a better implementation than the following
@@ -1084,51 +1044,144 @@ static void snapcast_sync_task(void *pvParameters) {
 					quick_sort_int64(short_buffer_median, 0, l);
 					avg = short_buffer_median[l/2];
 
-					int dir = 0;
-					age_expect = 4 * chunkDuration_us;
+					//if ((age < -2 * chunkDuration_us) || (age > 2 * chunkDuration_us) || (initialSync == 0)) {
+					//if ((age < -2 * chunkDuration_us) || (age > 2 * chunkDuration_us) || (initialSync == 0)) {
+					if ((avg < -2 * chunkDuration_us) || (avg > chunkDuration_us) || (initialSync == 0)) {
+						free(chnk->payload);
+						free(chnk);
+						chnk = NULL;
 
-					// void rtc_clk_apll_enable(bool enable, uint32_t sdm0, uint32_t sdm1, uint32_t sdm2, uint32_t o_div);
-					// apll_freq = xtal_freq * (4 + sdm2 + sdm1/256 + sdm0/65536)/((o_div + 2) * 2)
-					// xtal == 40MHz on lyrat v4.3
-					// I2S bit_clock = rate * (number of channels) * bits_per_sample
-					if (avg < -(age_expect + 1000)) {
-//					if (avg < -100) {
-//						sdm0 = apll_predefine_48k_corr[2][2];
-//						sdm1= apll_predefine_48k_corr[2][3];
-//						sdm2 = apll_predefine_48k_corr[2][4];
-//						o_div = apll_predefine_48k_corr[2][5];
+						struct timeval t;
+						get_diff_to_server(&t);
+						ESP_LOGW(TAG, "RESYNCING HARD %lldus, %lldus", age, ((int64_t)t.tv_sec * 1000000LL + (int64_t)t.tv_usec));
+//						ESP_LOGW(TAG, "RESYNCING HARD %lldus, %lldus", age);
 
-						dir = -1;
+						//reset_diff_buffer();
+
+						if (initialSync == 1) {
+//							i2s_stop(i2s_cfg.i2s_port);
+//							i2s_zero_dma_buffer(i2s_cfg.i2s_port);
+
+//							audio_element_reset_input_ringbuf(i2s_stream_writer);
+
+							// reset to normal playback speed
+							adjust_apll(0);
+
+							ESP_LOGW(TAG, "stop");
+						}
+
+						memset( short_buffer, 0, sizeof(short_buffer) );
+						short_buffer_cnt = 0;
+						short_buffer_full = 0;
+
+						initialSync = 0;
+						alarmValSub = 0;
+
+						continue;
 					}
-					else if (avg > -(age_expect - 1000)) {
-//					else if (avg > 100) {
-//						sdm0 = apll_predefine_48k_corr[3][2];
-//						sdm1= apll_predefine_48k_corr[3][3];
-//						sdm2 = apll_predefine_48k_corr[3][4];
-//						o_div = apll_predefine_48k_corr[3][5];
-
-						dir = 1;
-					}
-					else if ((avg <= -(age_expect - 1000)) && (avg >= -(age_expect + 1000))) {
-//					else if ((avg >= -100) && (avg <= 100)) {
-//					else {
-						// reset to normal playback speed
-//						sdm0 = apll_predefine[5][2];
-//						sdm1= apll_predefine[5][3];
-//						sdm2 = apll_predefine[5][4];
-//						o_div = apll_predefine[5][5];
-						dir = 0;
-					}
-
-//					adjust_apll(dir);
-
-					ESP_LOGI(TAG, "%lldus", avg);
-
-					//rtc_clk_apll_enable(1, sdm0, sdm1, sdm2, o_div);
 				}
 
 				p_payload = chnk->payload;
 				size = chnk->size;
+
+				int64_t age_expect;
+				// NOT 100% SURE ABOUT THE FOLLOWING CONTROL LOOP, PROBABLY BETTER WAYS TO DO IT, STILL TESTING
+				if (initialSync == 1)
+				{	// got initial sync, decrease / increase playback speed if age != 0
+					int dir = 0;
+					int samples = 1;
+					int sampleSize = 4;
+					int ageDiff = 0;
+
+					age_expect = -chunkDuration_us;
+
+//					if (avg < (age_expect - 2000) ) {
+////						ESP_LOGI(TAG, "insert %d samples", samples);
+//
+//						// too young add samples
+//						// write data to I2S
+//						bytesWritten = 0;
+//						bytesWritten += raw_stream_write(raw_stream_writer_to_i2s, p_payload, samples * sampleSize);
+//						if (bytesWritten < samples * sampleSize) {
+//							ESP_LOGE(TAG, "i2s raw writer ring buf full");
+//						}
+//
+//						avg -= (samples * sampleDuration_ns / 1000);
+//					}
+//					else if ((avg >= (age_expect - 2000)) && (avg < (age_expect - 1000))) {
+//						dir = 1;
+//					}
+//					//else if ((avg >= (age_expect - 1000)) && (avg <= 0)) {
+//					else if ((avg >= (age_expect - 1000)) && (avg <= (age_expect - 1000))) {
+//						dir = 0;
+//					}
+//					else if ((avg > (age_expect - 1000)) && (avg <= (age_expect - 2000))) {
+//						dir = -1;
+//					}
+//					else {
+////						ESP_LOGI(TAG, "drop %d samples", samples);
+//
+//						// drop samples
+//						p_payload += samples * sampleSize;
+//						size -= samples * sampleSize;
+//
+//						avg += (samples * sampleDuration_ns / 1000);
+//					}
+
+					if (short_buffer_full) {
+						if (avg < (age_expect - 1000)) {
+							dir = 1;
+
+							if (avg < (age_expect - 2000) ) {
+								ageDiff = (int)(age_expect - avg);
+								samples = ageDiff / (sampleDuration_ns / 1000);
+								if (samples > 4) {
+									samples = 4;
+								}
+
+								// too young add samples
+								// write data to I2S
+								bytesWritten = 0;
+								bytesWritten += raw_stream_write(raw_stream_writer_to_i2s, p_payload, samples * sampleSize);
+								if (bytesWritten < samples * sampleSize) {
+									ESP_LOGE(TAG, "i2s raw writer ring buf full");
+								}
+
+//								avg -= (samples * sampleDuration_ns / 1000);
+
+								ESP_LOGI(TAG, "insert %d samples", samples);
+							}
+						}
+						else if ((avg >= (age_expect - 1000)) && (avg <= (age_expect + 1000))) {
+							dir = 0;
+						}
+						else if (avg > (age_expect + 1000)) {
+							dir = -1;
+
+							if (avg > (age_expect + 2000)) {
+								ageDiff = (int)(avg - age_expect);
+								samples = ageDiff / (sampleDuration_ns / 1000);
+								if (samples > 4) {
+									samples = 4;
+								}
+
+								// drop samples
+								p_payload += samples * sampleSize;
+								size -= samples * sampleSize;
+
+//								avg += (samples * sampleDuration_ns / 1000);
+
+								ESP_LOGI(TAG, "drop %d samples", samples);
+							}
+						}
+
+						adjust_apll(dir);
+					}
+
+					ESP_LOGI(TAG, "%d: %lldus", dir, avg);
+				}
+
+
 
 				// write data to I2S
 				bytesWritten = 0;
@@ -1149,7 +1202,7 @@ static void snapcast_sync_task(void *pvParameters) {
 				struct timeval t;
 				get_diff_to_server(&t);
 				//ESP_LOGI(TAG, "%lldus, %d, %d, %d %lldus", age, sdm0, sdm1, sdm2, ((int64_t)t.tv_sec * 1000000LL + (int64_t)t.tv_usec));
-				ESP_LOGI(TAG, "%lldus, %lldus, %d, %d, %d %lldus", age, age + age_expect, sdm0, sdm1, sdm2, ((int64_t)t.tv_sec * 1000000LL + (int64_t)t.tv_usec));
+//				ESP_LOGI(TAG, "%lldus, %lldus, %d, %d, %d %lldus", age, age + age_expect, sdm0, sdm1, sdm2, ((int64_t)t.tv_sec * 1000000LL + (int64_t)t.tv_usec));
 			}
 			else {
 				ESP_LOGW(TAG, "couldn't get server now");
@@ -1543,8 +1596,8 @@ static void http_get_task(void *pvParameters) {
 							if (wirechnkCnt == 0) {
 								ESP_LOGI(TAG, "set decoder timeout");
 
-								audio_element_set_input_timeout(decoder, pdMS_TO_TICKS(100));
-								audio_element_set_output_timeout(decoder, pdMS_TO_TICKS(100));
+//								audio_element_set_input_timeout(decoder, pdMS_TO_TICKS(100));
+//								audio_element_set_output_timeout(decoder, pdMS_TO_TICKS(100));
 							}
 						#endif
 
@@ -1974,8 +2027,8 @@ int flac_decoder_write_cb(audio_element_handle_t el, char *buf, int len, TickTyp
 	}
 
 	if (flacCnt == wirechnkCnt) {
-		audio_element_set_input_timeout(decoder, portMAX_DELAY);
-		audio_element_set_output_timeout(decoder, portMAX_DELAY);
+//		audio_element_set_input_timeout(decoder, portMAX_DELAY);
+//		audio_element_set_output_timeout(decoder, portMAX_DELAY);
 
 		wirechnkCnt = 0;
 		flacCnt = 0;
@@ -2087,7 +2140,7 @@ void app_main(void) {
     ESP_LOGI(TAG, "Create raw stream to write data from decoder to i2s");
     raw_stream_cfg_t raw_2_cfg = RAW_STREAM_CFG_DEFAULT();
     raw_2_cfg.type = AUDIO_STREAM_WRITER;
-    raw_2_cfg.out_rb_size = 1 * 4608;// TODO: how much is really needed? effect on age calculation? Probably needs dynamically changeable to chunk size???
+    raw_2_cfg.out_rb_size = 4608;//3840;//2304;//2 * 4608;// TODO: how much is really needed? effect on age calculation? Probably needs dynamically changeable to chunk size???
     raw_stream_writer_to_i2s = raw_stream_init(&raw_2_cfg);
     audio_element_set_output_timeout(raw_stream_writer_to_i2s, pdMS_TO_TICKS(1000));
 
