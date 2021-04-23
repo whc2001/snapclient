@@ -3,6 +3,10 @@
  *
  *  Created on: May 19, 2018
  *      Author: alexandru.bogdan
+ *      Editor: Carlos Derseher
+ *
+ *      original source code:
+ *      https://github.com/accabog/MedianFilter
  */
 
 #ifndef MEDIANFILTER_H_
@@ -12,9 +16,11 @@
 extern "C" {
 #endif
 
+#include <stdint.h>
+
 typedef struct sMedianNode
 {
-    int value;                      //sample value
+    int64_t value;                  //sample value
     struct sMedianNode *nextAge;    //pointer to next oldest value
     struct sMedianNode *nextValue;  //pointer to next smallest value
     struct sMedianNode *prevValue;  //pointer to previous smallest value
@@ -30,7 +36,7 @@ typedef struct
 } sMedianFilter_t;
 
 int MEDIANFILTER_Init(sMedianFilter_t *medianFilter);
-int MEDIANFILTER_Insert(sMedianFilter_t *medianFilter, int sample);
+int64_t MEDIANFILTER_Insert(sMedianFilter_t *medianFilter, int64_t sample);
 
 #ifdef __cplusplus
 }

@@ -3,7 +3,17 @@
  *
  *  Created on: May 19, 2018
  *      Author: alexandru.bogdan
+ *      Editor: Carlos Derseher
+ *
+ *      original source code:
+ *      https://github.com/accabog/MedianFilter
  */
+
+/**
+ * This Module expects odd numbers of buffer lengths!!!
+ */
+
+#include <stdint.h>
 
 #include "MedianFilter.h"
 
@@ -31,7 +41,7 @@ int MEDIANFILTER_Init(sMedianFilter_t *medianFilter)
     return -1;
 }
 
-int MEDIANFILTER_Insert(sMedianFilter_t *medianFilter, int sample)
+int64_t MEDIANFILTER_Insert(sMedianFilter_t *medianFilter, int64_t sample)
 {
     unsigned int i;
     sMedianNode_t *newNode, *it;

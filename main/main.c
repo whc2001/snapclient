@@ -158,13 +158,17 @@ SemaphoreHandle_t timeSyncSemaphoreHandle = NULL;
 
 SemaphoreHandle_t timer0_syncSampleSemaphoreHandle = NULL;
 
-#define DIFF_BUF_LEN 	200
+#define DIFF_BUF_LEN 	199
 uint8_t diffBufCnt = 0;
 static int8_t diffBuffFull = 0;
 static struct timeval diffToServer = {0, 0};	// median diff to server in µs
 static struct timeval diffBuf[DIFF_BUF_LEN] = {0};	// collected diff's to server
 //static struct timeval *medianArray = NULL;	// temp median calculation data is stored at this location
 static struct timeval medianArray[DIFF_BUF_LEN] = {0};	// temp median calculation data is stored at this location
+
+static sMedianFilter_t latencyMedianFilter;
+static sMedianNode_t latencyMedianBuffer[DIFF_BUF_LEN];
+static int64_t diffToServer_int64_t = 0;
 
 uint32_t buffer_ms = 400;
 uint8_t  muteCH[4] = {0};
@@ -488,6 +492,7 @@ int8_t set_diff_to_server( struct timeval *tDiff, size_t len) {
 
 	return ret;
 }
+
 // TODO: implement diff buffer using some sort of fifo
 //		 current implementation isn't very good nor user friendly
 
@@ -502,6 +507,17 @@ int8_t reset_diff_buffer(void) {
 	diffBufCnt = 0;
 	diffBuffFull = false;
 
+	// init diff buff median filter
+	latencyMedianFilter.numNodes = DIFF_BUF_LEN;
+    latencyMedianFilter.medianBuffer = latencyMedianBuffer;
+	if (MEDIANFILTER_Init(&latencyMedianFilter) < 0) {
+		ESP_LOGE(TAG, "reset_diff_buffer: couldn't init median filter. STOP");
+
+		xSemaphoreGive( diffBufSemaphoreHandle );
+
+		return -2;
+	}
+
 	xSemaphoreGive( diffBufSemaphoreHandle );
 
 	return 0;
@@ -509,6 +525,10 @@ int8_t reset_diff_buffer(void) {
 
 int8_t add_to_diff_buffer(struct timeval tv) {
 	size_t bufLen;
+	int64_t medianValue, newValue;
+
+	newValue = ((int64_t)tv.tv_sec * 1000000LL + (int64_t)tv.tv_usec);
+	medianValue = MEDIANFILTER_Insert(&latencyMedianFilter, newValue);
 
 	if (xSemaphoreTake( diffBufSemaphoreHandle, 1 ) == pdFALSE) {
 		ESP_LOGW(TAG, "add_to_diff_buffer: can't take semaphore");
@@ -516,6 +536,17 @@ int8_t add_to_diff_buffer(struct timeval tv) {
 		return -1;
 	}
 
+	diffToServer_int64_t =  medianValue;
+
+	diffBufCnt++;
+	if (diffBufCnt >= DIFF_BUF_LEN) {
+		diffBuffFull = true;
+	}
+
+//	ESP_LOGW(TAG, "add_to_diff_buffer");
+
+
+	/*
 	diffBuf[diffBufCnt++] = tv;
 	if (diffBufCnt >= DIFF_BUF_LEN) {
 		diffBuffFull = true;
@@ -530,7 +561,9 @@ int8_t add_to_diff_buffer(struct timeval tv) {
 		bufLen = diffBufCnt;
 	}
 
+
 	set_diff_to_server(diffBuf, bufLen);
+	*/
 
 	xSemaphoreGive( diffBufSemaphoreHandle );
 
@@ -559,6 +592,7 @@ int8_t diff_buffer_full(void) {
 /**
  *
  */
+/*
 int8_t get_diff_to_server( struct timeval *tDiff ) {
 	static struct timeval lastDiff = { 0, 0 };
 
@@ -583,10 +617,37 @@ int8_t get_diff_to_server( struct timeval *tDiff ) {
 
 	return 0;
 }
+*/
+
+int8_t get_diff_to_server( int64_t *tDiff ) {
+	static int64_t lastDiff = { 0, 0 };
+
+	if (diffBufSemaphoreHandle == NULL) {
+		ESP_LOGE(TAG, "get_diff_to_server: diffBufSemaphoreHandle == NULL");
+
+		return -1;
+	}
+
+	if (xSemaphoreTake( diffBufSemaphoreHandle, 0 ) == pdFALSE) {
+		*tDiff = lastDiff;
+
+		//ESP_LOGW(TAG, "get_diff_to_server: can't take semaphore. Old diff retreived");
+
+		return -2;
+	}
+
+	*tDiff = diffToServer_int64_t;
+	lastDiff = diffToServer_int64_t;		// store value, so we can return a value if semaphore couldn't be taken
+
+	xSemaphoreGive( diffBufSemaphoreHandle );
+
+	return 0;
+}
 
 /**
  *
  */
+/*
 int8_t server_now( struct timeval *sNow ) {
 	struct timeval now;
 	struct timeval diff;
@@ -618,7 +679,41 @@ int8_t server_now( struct timeval *sNow ) {
 
 	return 0;
 }
+*/
+int8_t server_now( int64_t *sNow ) {
+	struct timeval now;
+	int64_t diff, now2;
 
+	// get current time
+	if (gettimeofday(&now, NULL)) {
+		ESP_LOGE(TAG, "server_now: Failed to get time of day");
+
+		return -1;
+	}
+
+	if (get_diff_to_server(&diff) == -1) {
+		ESP_LOGE(TAG, "server_now: can't get diff to server");
+
+		return -1;
+	}
+
+	if (diff == 0) {
+		//ESP_LOGW(TAG, "server_now: diff to server not initialized yet");
+
+		return -1;
+	}
+
+	now2 = ((int64_t)now.tv_sec * 1000000LL + (int64_t)now.tv_usec);
+	*sNow = now2 + diff;
+
+	//timeradd(&now, &diff, sNow);
+
+//	ESP_LOGI(TAG, "now: %lldus", (int64_t)now.tv_sec * 1000000LL + (int64_t)now.tv_usec);
+//	ESP_LOGI(TAG, "diff: %lldus", (int64_t)diff.tv_sec * 1000000LL + (int64_t)diff.tv_usec);
+//	ESP_LOGI(TAG, "serverNow: %lldus", (int64_t)sNow->tv_sec * 1000000LL + (int64_t)sNow->tv_usec);
+
+	return 0;
+}
 
 /*
  * Timer group0 ISR handler
@@ -826,19 +921,26 @@ static void stats_task(void *arg) {
 //    shortBuffer_.setSize(100);
 //    miniBuffer_.setSize(20);
 
-#define MAX_SHORT_BUFFER_COUNT	50
-int64_t short_buffer[MAX_SHORT_BUFFER_COUNT];
-int64_t short_buffer_median[MAX_SHORT_BUFFER_COUNT];
+#define SHORT_BUFFER_LEN	99
+int64_t short_buffer[SHORT_BUFFER_LEN];
+int64_t short_buffer_median[SHORT_BUFFER_LEN];
 int short_buffer_cnt = 0;
 int short_buffer_full = 0;
 
-#define MAX_MINI_BUFFER_COUNT	10
-int64_t mini_buffer[MAX_MINI_BUFFER_COUNT];
-int64_t mini_buffer_median[MAX_MINI_BUFFER_COUNT];
+#define MINI_BUFFER_LEN	19
+int64_t mini_buffer[MINI_BUFFER_LEN];
+int64_t mini_buffer_median[MINI_BUFFER_LEN];
 int mini_buffer_cnt = 0;
 int mini_buffer_full = 0;
 
 int8_t currentDir = 0;
+
+
+static sMedianFilter_t shortMedianFilter;
+static sMedianNode_t shortMedianBuffer[SHORT_BUFFER_LEN];
+
+static sMedianFilter_t miniMedianFilter;
+static sMedianNode_t miniMedianBuffer[MINI_BUFFER_LEN];
 
 
 // void rtc_clk_apll_enable(bool enable, uint32_t sdm0, uint32_t sdm1, uint32_t sdm2, uint32_t o_div);
@@ -892,7 +994,8 @@ void adjust_apll(int8_t direction) {
 static void snapcast_sync_task(void *pvParameters) {
 	snapcast_sync_task_cfg_t *taskCfg = (snapcast_sync_task_cfg_t *)pvParameters;
 	wire_chunk_message_t *chnk = NULL;
-	struct timeval serverNow = {0, 0};
+	//struct timeval serverNow = {0, 0};
+	int64_t serverNow = 0;
 	int64_t age;
 	BaseType_t ret;
 	int64_t chunkDuration_us = 24000;
@@ -908,13 +1011,15 @@ static void snapcast_sync_task(void *pvParameters) {
 	int initialSync = 0;
 	int sdm0, sdm1, sdm2, o_div;
 	int64_t avg = 0, avg2 = 0;
-	struct timeval latencyInitialSync = {0, 0};
+	//struct timeval latencyInitialSync = {0, 0};
+	int64_t latencyInitialSync = {0, 0};
 	int dir = 0;
-	struct timeval serverNow_saved = {0, 0};
+	//struct timeval serverNow_saved = {0, 0};
+	int64_t serverNow_saved = {0, 0};
 
 	ESP_LOGI(TAG, "started sync task");
 
-	tg0_timer_init();		// initialize sample sync timer
+	tg0_timer_init();		// initialize initial sync timer
 
 	initialSync = 0;
 
@@ -928,6 +1033,22 @@ static void snapcast_sync_task(void *pvParameters) {
 	o_div = apll_predefine[5][5];
 
 	rtc_clk_apll_enable(1, sdm0, sdm1, sdm2, o_div);
+
+	miniMedianFilter.numNodes = MINI_BUFFER_LEN;
+	miniMedianFilter.medianBuffer = miniMedianBuffer;
+	if (MEDIANFILTER_Init(&miniMedianFilter) ) {
+		ESP_LOGE(TAG, "snapcast_sync_task: couldn't init miniMedianFilter. STOP");
+
+		return;
+	}
+
+	shortMedianFilter.numNodes = SHORT_BUFFER_LEN;
+	shortMedianFilter.medianBuffer = shortMedianBuffer;
+	if (MEDIANFILTER_Init(&shortMedianFilter) ) {
+		ESP_LOGE(TAG, "snapcast_sync_task: couldn't init shortMedianFilter. STOP");
+
+		return;
+	}
 
 	while(1) {
 		if (chnk == NULL) {
@@ -967,12 +1088,16 @@ static void snapcast_sync_task(void *pvParameters) {
 
 			//if (server_now(&serverNow) >= 0) {
 			if (1) {
-				if (initialSync == 0)
-				//if (1)
+//				if (initialSync == 0)
+				if (1)
 				{
 					if (server_now(&serverNow) >= 0) {
 						// first chunk needs to be at exact time point
-						age =   ((int64_t)serverNow.tv_sec * 1000000LL + (int64_t)serverNow.tv_usec) -
+//						age =   ((int64_t)serverNow.tv_sec * 1000000LL + (int64_t)serverNow.tv_usec) -
+//								((int64_t)chnk->timestamp.sec * 1000000LL + (int64_t)chnk->timestamp.usec) -
+//								(int64_t)taskCfg->buffer_us +
+//								(int64_t)taskCfg->outputBufferDacTime_us;
+						age =   serverNow -
 								((int64_t)chnk->timestamp.sec * 1000000LL + (int64_t)chnk->timestamp.usec) -
 								(int64_t)taskCfg->buffer_us +
 								(int64_t)taskCfg->outputBufferDacTime_us;
@@ -995,9 +1120,10 @@ static void snapcast_sync_task(void *pvParameters) {
 
 					struct timeval now;
 					gettimeofday(&now, NULL);
-					timeradd(&now, &latencyInitialSync, &serverNow_saved);
+					serverNow_saved = ((int64_t)now.tv_sec * 1000000LL + (int64_t)now.tv_usec) + latencyInitialSync;
+					//timeradd(&now, &latencyInitialSync, &serverNow_saved);
 
-					age =   ((int64_t)serverNow_saved.tv_sec * 1000000LL + (int64_t)serverNow_saved.tv_usec) -
+					age =   serverNow_saved -
 							((int64_t)chnk->timestamp.sec * 1000000LL + (int64_t)chnk->timestamp.usec) -
 							(int64_t)taskCfg->buffer_us +
 							(int64_t)taskCfg->outputBufferDacTime_us;
@@ -1005,6 +1131,12 @@ static void snapcast_sync_task(void *pvParameters) {
 
 				if (age < 0) {		// get initial sync using hardware timer
 					if (initialSync == 0) {
+						if (MEDIANFILTER_Init(&shortMedianFilter) ) {
+							ESP_LOGE(TAG, "snapcast_sync_task: couldn't init shortMedianFilter. STOP");
+
+							return;
+						}
+
 #if 1
 						p_payload = chnk->payload;
 						size = chnk->size;
@@ -1153,9 +1285,11 @@ static void snapcast_sync_task(void *pvParameters) {
 					free(chnk);
 					chnk = NULL;
 
-					struct timeval t;
+					//struct timeval t;
+					int64_t t;
 					get_diff_to_server(&t);
-					ESP_LOGW(TAG, "RESYNCING HARD 1 %lldus, %lldus", age, ((int64_t)t.tv_sec * 1000000LL + (int64_t)t.tv_usec));
+					//ESP_LOGW(TAG, "RESYNCING HARD 1 %lldus, %lldus", age, ((int64_t)t.tv_sec * 1000000LL + (int64_t)t.tv_usec));
+					ESP_LOGW(TAG, "RESYNCING HARD 1 %lldus, %lldus", age, t);
 
 					if (short_buffer_full) {
 						memset( short_buffer, 0, sizeof(short_buffer) );
@@ -1194,14 +1328,22 @@ static void snapcast_sync_task(void *pvParameters) {
 					#endif
 
 //					avg = age + chunkDuration_us;
-//					short_buffer_full = 1;
+					short_buffer_full = 1;
 
+//					short_buffer_cnt++;
+//					if (short_buffer_cnt >= SHORT_BUFFER_LEN ) {
+//						short_buffer_full = 1;
+//					}
+
+					avg = MEDIANFILTER_Insert(&shortMedianFilter, age);
+
+/*
 					int l;
 					// TODO:
 					// BADAIX original code uses 3 buffers and median on them to do sample rate adjustment calculations
 					// so for sure there is a better implementation than the following
 					short_buffer[short_buffer_cnt++] = age;// + chunkDuration_us;;
-					if (short_buffer_cnt >= MAX_SHORT_BUFFER_COUNT ) {
+					if (short_buffer_cnt >= SHORT_BUFFER_LEN ) {
 						short_buffer_full = 1;
 
 						short_buffer_cnt = 0;
@@ -1209,7 +1351,7 @@ static void snapcast_sync_task(void *pvParameters) {
 
 
 					if (short_buffer_full) {
-						l = MAX_SHORT_BUFFER_COUNT;
+						l = SHORT_BUFFER_LEN;
 					}
 					else {
 						l = short_buffer_cnt;
@@ -1218,7 +1360,7 @@ static void snapcast_sync_task(void *pvParameters) {
 					memcpy( short_buffer_median, short_buffer, sizeof(short_buffer) );
 					quick_sort_int64(short_buffer_median, 0, l);
 					avg = short_buffer_median[l/2];
-
+*/
 
 					/*
 					mini_buffer[mini_buffer_cnt++] = age;
@@ -1242,15 +1384,20 @@ static void snapcast_sync_task(void *pvParameters) {
 
 
 
-					if ((avg < -1 * chunkDuration_us / 1) || (avg > 1 * chunkDuration_us / 1) || (initialSync == 0)) {
+					if ((age < -1 * chunkDuration_us / 8) || (age > 1 * chunkDuration_us / 8) || (initialSync == 0)) {
 						free(chnk->payload);
 						free(chnk);
 						chnk = NULL;
 
-						struct timeval t;
-						get_diff_to_server(&t);
-						ESP_LOGW(TAG, "RESYNCING HARD 2 %lldus, %lldus", age, ((int64_t)t.tv_sec * 1000000LL + (int64_t)t.tv_usec));
+//						struct timeval t;
+//						get_diff_to_server(&t);
+//						ESP_LOGW(TAG, "RESYNCING HARD 2 %lldus, %lldus", age, ((int64_t)t.tv_sec * 1000000LL + (int64_t)t.tv_usec));
 //						ESP_LOGW(TAG, "RESYNCING HARD %lldus, %lldus", age);
+
+						int64_t t;
+						get_diff_to_server(&t);
+						//ESP_LOGW(TAG, "RESYNCING HARD 1 %lldus, %lldus", age, ((int64_t)t.tv_sec * 1000000LL + (int64_t)t.tv_usec));
+						ESP_LOGW(TAG, "RESYNCING HARD 2 %lldus, %lldus", age, t);
 
 						//reset_diff_buffer();
 
@@ -1281,7 +1428,7 @@ static void snapcast_sync_task(void *pvParameters) {
 
 
 				const int64_t age_expect = 0;
-				const int64_t maxOffset = 500;
+				const int64_t maxOffset = 250;
 				const int64_t maxOffset_dropSample = 1500;
 				// NOT 100% SURE ABOUT THE FOLLOWING CONTROL LOOP, PROBABLY BETTER WAYS TO DO IT, STILL TESTING
 				if (initialSync == 1)
@@ -1350,18 +1497,16 @@ static void snapcast_sync_task(void *pvParameters) {
 
 						adjust_apll(dir);
 					}
-
-//					ESP_LOGI(TAG, "%d: %lldus, %lldus", dir, avg, avg2);
 				}
 
-//				ESP_LOGI(TAG, "%d: %lld", dir, age);
-				struct timeval t;
+//				struct timeval t;
+//				get_diff_to_server(&t);
+//				ESP_LOGI(TAG, "%d: %lldus, %lldus %lldus %lldus", dir, age, avg, ((int64_t)t.tv_sec * 1000000LL + (int64_t)t.tv_usec),
+//																				 ((int64_t)latencyInitialSync.tv_sec * 1000000LL + (int64_t)latencyInitialSync.tv_usec));
+
+				int64_t t;
 				get_diff_to_server(&t);
-				//ESP_LOGI(TAG, "%d: %lldus, %lldus", dir, age, ((int64_t)t.tv_sec * 1000000LL + (int64_t)t.tv_usec));
-				ESP_LOGI(TAG, "%d: %lldus, %lldus %lldus %lldus", dir, age, avg, ((int64_t)t.tv_sec * 1000000LL + (int64_t)t.tv_usec),
-																				 ((int64_t)latencyInitialSync.tv_sec * 1000000LL + (int64_t)latencyInitialSync.tv_usec));
-//				ESP_LOGI(TAG, "%lldus, %d, %d, %d %lldus", age, sdm0, sdm1, sdm2, ((int64_t)t.tv_sec * 1000000LL + (int64_t)t.tv_usec));
-//				ESP_LOGI(TAG, "%lldus, %lldus, %d, %d, %d %lldus", age, age + age_expect, sdm0, sdm1, sdm2, ((int64_t)t.tv_sec * 1000000LL + (int64_t)t.tv_usec));
+				ESP_LOGI(TAG, "%d: %lldus, %lldus %lldus %lldus", dir, age, avg, t, latencyInitialSync);
 			}
 			else {
 				ESP_LOGW(TAG, "couldn't get server now");
@@ -1599,7 +1744,7 @@ static void snapcast_sync_task(void *pvParameters) {
 					// BADAIX original code uses 3 buffers and median on them to do sample rate adjustment calculations
 					// so for sure there is a better implementation than the following
 					short_buffer[short_buffer_cnt++] = age_save;// age;
-					if (short_buffer_cnt >= MAX_SHORT_BUFFER_COUNT ) {
+					if (short_buffer_cnt >= SHORT_BUFFER_LEN ) {
 						short_buffer_full = 1;
 
 						short_buffer_cnt = 0;
@@ -1607,7 +1752,7 @@ static void snapcast_sync_task(void *pvParameters) {
 
 					int l;
 					if (short_buffer_full) {
-						l = MAX_SHORT_BUFFER_COUNT;
+						l = SHORT_BUFFER_LEN;
 					}
 					else {
 						l = short_buffer_cnt;
@@ -1832,6 +1977,15 @@ static void http_get_task(void *pvParameters) {
     while(1) {
     	memset((void *)diffBuf, 0, sizeof(diffBuf));
     	diffBufCnt = 0;
+
+    	// init diff buff median filter
+    	latencyMedianFilter.numNodes = DIFF_BUF_LEN;
+        latencyMedianFilter.medianBuffer = latencyMedianBuffer;
+    	if (MEDIANFILTER_Init(&latencyMedianFilter) < 0) {
+    		ESP_LOGE(TAG, "reset_diff_buffer: couldn't init median filter. STOP");
+
+    		return;
+    	}
 
         /* Wait for the callback to set the CONNECTED_BIT in the
            event group.
@@ -2260,6 +2414,7 @@ static void http_get_task(void *pvParameters) {
 
 							add_to_diff_buffer(tmpDiffToServer);
 
+
 							// store current time
 							lastTimeSync.tv_sec = now.tv_sec;
 							lastTimeSync.tv_usec = now.tv_usec;
@@ -2605,10 +2760,10 @@ void setup_dsp_i2s(uint32_t sample_rate)
 	    .bits_per_sample = BITS_PER_SAMPLE,
 	    .channel_format = I2S_CHANNEL_FMT_RIGHT_LEFT,                           // 2-channels
 	    .communication_format = I2S_COMM_FORMAT_STAND_I2S,
-	    .dma_buf_count = 32,
+	    .dma_buf_count = 34,
 	    .dma_buf_len = 16,
-//		.dma_buf_count = 5,
-//		.dma_buf_len = 288,
+//		.dma_buf_count = 2,
+//		.dma_buf_len = 256,
 	    .intr_alloc_flags = 1,                                                  //Default interrupt priority
 	    .use_apll = true,
 	    .fixed_mclk = 0,
