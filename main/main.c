@@ -40,6 +40,9 @@
 #include "mdns.h"
 #include "esp_sntp.h"
 
+#include <wifi_provisioning/manager.h>
+#include <wifi_provisioning/scheme_softap.h>
+
 #include "snapcast.h"
 #include "MedianFilter.h"
 
@@ -47,6 +50,7 @@
 
 #include <sys/time.h>
 
+#define CONFIG_USE_WIFI_PROVISIONING	1
 #define COLLECT_RUNTIME_STATS	0
 
 // @ 48kHz, 2ch, 16bit audio data and 24ms wirechunks (hardcoded for now) we expect 0.024 * 2 * 16/8 * 48000 = 4608 Bytes
@@ -123,12 +127,12 @@ char *codecString = NULL;
 #define FLAC_DECODER_CORE_ID	tskNO_AFFINITY//0//tskNO_AFFINITY
 
 QueueHandle_t timestampQueueHandle;
-#define TIMESTAMP_QUEUE_LENGTH 	500		//!< needs to be at least ~500 because if silence is received, the espressif's flac decoder won't generate data on its output for a long time
+#define TIMESTAMP_QUEUE_LENGTH 	1000		//!< needs to be at least ~500 because if silence is received, the espressif's flac decoder won't generate data on its output for a long time
 static StaticQueue_t timestampQueue;
 uint8_t timestampQueueStorageArea[ TIMESTAMP_QUEUE_LENGTH * sizeof(tv_t) ];
 
 QueueHandle_t pcmChunkQueueHandle;
-#define PCM_CHNK_QUEUE_LENGTH 250	// TODO: one chunk is hardcoded to 24ms, change it to be dynamically adjustable. 1s buffer ~ 42
+#define PCM_CHNK_QUEUE_LENGTH 500	// TODO: one chunk is hardcoded to 24ms, change it to be dynamically adjustable. 1s buffer ~ 42
 static StaticQueue_t pcmChunkQueue;
 uint8_t pcmChunkQueueStorageArea[ PCM_CHNK_QUEUE_LENGTH * sizeof(wire_chunk_message_t *) ];
 
@@ -203,47 +207,211 @@ static char buff[BUFF_LEN];
 //static audio_element_handle_t snapcast_stream;
 static char mac_address[18];
 
-#define MY_SSID		""
-#define MY_WPA2_PSK ""
+#define MY_SSID		"..."
+#define MY_WPA2_PSK "..."
 
 static EventGroupHandle_t s_wifi_event_group;
 
-#define WIFI_CONNECTED_BIT BIT0
-#define WIFI_FAIL_BIT      BIT1
+const int WIFI_CONNECTED_EVENT = BIT0;
+const int WIFI_FAIL_EVENT  =    BIT1;
 
 static int s_retry_num = 0;
 
-static void event_handler(void* arg, esp_event_base_t event_base, int32_t event_id, void* event_data) {
-    if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_START) {
-        esp_wifi_connect();
+
+// Event handler for catching system events
+static void event_handler(void* arg, esp_event_base_t event_base, int event_id, void* event_data) {
+    if (event_base == WIFI_PROV_EVENT) {
+        switch (event_id) {
+            case WIFI_PROV_START:
+                ESP_LOGI(TAG, "Provisioning started");
+                break;
+            case WIFI_PROV_CRED_RECV: {
+                wifi_sta_config_t *wifi_sta_cfg = (wifi_sta_config_t *)event_data;
+                ESP_LOGI(TAG, "Received Wi-Fi credentials"
+                         "\n\tSSID     : %s\n\tPassword : %s",
+                         (const char *) wifi_sta_cfg->ssid,
+                         (const char *) wifi_sta_cfg->password);
+                break;
+            }
+            case WIFI_PROV_CRED_FAIL: {
+                wifi_prov_sta_fail_reason_t *reason = (wifi_prov_sta_fail_reason_t *)event_data;
+                ESP_LOGE(TAG, "Provisioning failed!\n\tReason : %s"
+                         "\n\tPlease reset to factory and retry provisioning",
+                         (*reason == WIFI_PROV_STA_AUTH_ERROR) ?
+                         "Wi-Fi station authentication failed" : "Wi-Fi access-point not found");
+                break;
+            }
+            case WIFI_PROV_CRED_SUCCESS:
+                ESP_LOGI(TAG, "Provisioning successful");
+                break;
+            case WIFI_PROV_END:
+                /* De-initialize manager once provisioning is finished */
+                wifi_prov_mgr_deinit();
+                break;
+            default:
+                break;
+        }
     }
-    else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_DISCONNECTED) {
-        if (s_retry_num < 10) {
-            esp_wifi_connect();
-            s_retry_num++;
-            ESP_LOGI(TAG, "retry to connect to the AP");
-        }
-        else {
-            xEventGroupSetBits(s_wifi_event_group, WIFI_FAIL_BIT);
-        }
-        ESP_LOGI(TAG,"connect to the AP fail");
+    else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_START) {
+        esp_wifi_connect();
     }
     else if (event_base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP) {
         ip_event_got_ip_t* event = (ip_event_got_ip_t*) event_data;
-        ESP_LOGI(TAG, "got ip:" IPSTR, IP2STR(&event->ip_info.ip));
-        s_retry_num = 0;
-        xEventGroupSetBits(s_wifi_event_group, WIFI_CONNECTED_BIT);
+        ESP_LOGI(TAG, "Connected with IP Address:" IPSTR, IP2STR(&event->ip_info.ip));
+        /* Signal main application to continue execution */
+        xEventGroupSetBits(s_wifi_event_group, WIFI_CONNECTED_EVENT);
+    }
+    else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_DISCONNECTED) {
+        ESP_LOGI(TAG, "Disconnected. Connecting to the AP again...");
+        esp_wifi_connect();
     }
 }
 
-void wifi_init_sta(void) {
-    s_wifi_event_group = xEventGroupCreate();
 
-    ESP_ERROR_CHECK(esp_netif_init());
+static void get_device_service_name(char *service_name, size_t max)
+{
+    uint8_t eth_mac[6];
+    const char *ssid_prefix = "PROV_";
+    esp_wifi_get_mac(WIFI_IF_STA, eth_mac);
+    snprintf(service_name, max, "%s%02X%02X%02X",
+             ssid_prefix, eth_mac[3], eth_mac[4], eth_mac[5]);
+}
 
-    ESP_ERROR_CHECK(esp_event_loop_create_default());
+#if CONFIG_USE_WIFI_PROVISIONING == 1
+/**
+ *
+ */
+static void wifi_init_sta(void) {
+    /* Start Wi-Fi in station mode */
+    ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
+    ESP_ERROR_CHECK(esp_wifi_start());
+
+    // Waiting until either the connection is established (WIFI_CONNECTED_EVENT) or connection failed for the maximum
+    // number of re-tries (WIFI_FAIL_EVENT). The bits are set by event_handler() (see above)
+    EventBits_t bits = xEventGroupWaitBits(	s_wifi_event_group,
+											WIFI_CONNECTED_EVENT | WIFI_FAIL_EVENT,
+											pdFALSE,
+											pdFALSE,
+											portMAX_DELAY );
+
+    // xEventGroupWaitBits() returns the bits before the call returned, hence we can test which event actually happened.
+    if (bits & WIFI_CONNECTED_EVENT) {
+        ESP_LOGI(TAG, "connected to ap");
+    }
+    else if (bits & WIFI_FAIL_EVENT) {
+        ESP_LOGI(TAG, "Failed to connect to AP ...");
+    }
+    else {
+    	ESP_LOGE(TAG, "UNEXPECTED EVENT");
+	}
+}
+
+/**
+ *
+ */
+void wifi_init_provisioning(void) {
+    // Register our event handler for Wi-Fi, IP and Provisioning related events
+    ESP_ERROR_CHECK(esp_event_handler_register(WIFI_PROV_EVENT, ESP_EVENT_ANY_ID, &event_handler, NULL));
+    ESP_ERROR_CHECK(esp_event_handler_register(WIFI_EVENT, ESP_EVENT_ANY_ID, &event_handler, NULL));
+    ESP_ERROR_CHECK(esp_event_handler_register(IP_EVENT, IP_EVENT_STA_GOT_IP, &event_handler, NULL));
+
+    // Initialize Wi-Fi including netif with default config
     esp_netif_create_default_wifi_sta();
+    esp_netif_create_default_wifi_ap();
+    wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
+    ESP_ERROR_CHECK(esp_wifi_init(&cfg));
 
+    // Configuration for the provisioning manager
+    wifi_prov_mgr_config_t config = {
+        .scheme = wifi_prov_scheme_softap,
+        .scheme_event_handler = WIFI_PROV_EVENT_HANDLER_NONE
+    };
+
+    // Initialize provisioning manager with the
+    // configuration parameters set above
+    ESP_ERROR_CHECK(wifi_prov_mgr_init(config));
+
+    bool provisioned = false;
+    /* Let's find out if the device is provisioned */
+    ESP_ERROR_CHECK(wifi_prov_mgr_is_provisioned(&provisioned));
+
+    /* If device is not yet provisioned start provisioning service */
+    if (!provisioned) {
+        ESP_LOGI(TAG, "Starting provisioning");
+
+        // Wi-Fi SSID when scheme is wifi_prov_scheme_softap
+        char service_name[12];
+        get_device_service_name(service_name, sizeof(service_name));
+
+        /* What is the security level that we want (0 or 1):
+         *      - WIFI_PROV_SECURITY_0 is simply plain text communication.
+         *      - WIFI_PROV_SECURITY_1 is secure communication which consists of secure handshake
+         *          using X25519 key exchange and proof of possession (pop) and AES-CTR
+         *          for encryption/decryption of messages.
+         */
+        wifi_prov_security_t security = WIFI_PROV_SECURITY_1;
+
+        /* Do we want a proof-of-possession (ignored if Security 0 is selected):
+         *      - this should be a string with length > 0
+         *      - NULL if not used
+         */
+        const char *pop = NULL;//"abcd1234";
+
+        /* What is the service key (could be NULL)
+         * This translates to :
+         *     - Wi-Fi password when scheme is wifi_prov_scheme_softap
+         *     - simply ignored when scheme is wifi_prov_scheme_ble
+         */
+        const char *service_key = "12345678";
+
+        /* An optional endpoint that applications can create if they expect to
+         * get some additional custom data during provisioning workflow.
+         * The endpoint name can be anything of your choice.
+         * This call must be made before starting the provisioning.
+         */
+        //wifi_prov_mgr_endpoint_create("custom-data");
+        /* Start provisioning service */
+        ESP_ERROR_CHECK(wifi_prov_mgr_start_provisioning(security, pop, service_name, service_key));
+
+        /* The handler for the optional endpoint created above.
+         * This call must be made after starting the provisioning, and only if the endpoint
+         * has already been created above.
+         */
+        //wifi_prov_mgr_endpoint_register("custom-data", custom_prov_data_handler, NULL);
+
+        /* Uncomment the following to wait for the provisioning to finish and then release
+         * the resources of the manager. Since in this case de-initialization is triggered
+         * by the default event loop handler, we don't need to call the following */
+        // wifi_prov_mgr_wait();
+        // wifi_prov_mgr_deinit();
+    }
+    else {
+        ESP_LOGI(TAG, "Already provisioned, starting Wi-Fi STA");
+
+        /* We don't need the manager as device is already provisioned,
+         * so let's release it's resources */
+        wifi_prov_mgr_deinit();
+
+        /* Start Wi-Fi station */
+        wifi_init_sta();
+    }
+
+    /* Wait for Wi-Fi connection */
+    xEventGroupWaitBits(s_wifi_event_group, WIFI_CONNECTED_EVENT, false, true, portMAX_DELAY);
+}
+
+/**
+ *
+ */
+void wifi_init(void) {
+	wifi_init_provisioning();
+}
+
+#else
+/**
+ *
+ */
+void wifi_init(void) {
     wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
     ESP_ERROR_CHECK(esp_wifi_init(&cfg));
 
@@ -252,30 +420,30 @@ void wifi_init_sta(void) {
 
     wifi_config_t wifi_config = {
         .sta = {
-			.ssid = MY_SSID,//CONFIG_ESP_WIFI_SSID,
-			.password = MY_WPA2_PSK,//CONFIG_ESP_WIFI_PASSWORD,
+			.ssid = MY_SSID,
+			.password = MY_WPA2_PSK,
 			.bssid_set = false
         },
     };
+
     ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA) );
     ESP_ERROR_CHECK(esp_wifi_set_config(ESP_IF_WIFI_STA, &wifi_config) );
     ESP_ERROR_CHECK(esp_wifi_start() );
 
     ESP_LOGI(TAG, "wifi_init_sta finished.");
 
-    /* Waiting until either the connection is established (WIFI_CONNECTED_BIT) or connection failed for the maximum
-     * number of re-tries (WIFI_FAIL_BIT). The bits are set by event_handler() (see above) */
+    // Waiting until either the connection is established (WIFI_CONNECTED_EVENT) or connection failed for the maximum
+    // number of re-tries (WIFI_FAIL_EVENT). The bits are set by event_handler() (see above)
     EventBits_t bits = xEventGroupWaitBits(	s_wifi_event_group,
-											WIFI_CONNECTED_BIT | WIFI_FAIL_BIT,
+											WIFI_CONNECTED_EVENT | WIFI_FAIL_EVENT,
 											pdFALSE,
 											pdFALSE,
 											portMAX_DELAY );
 
-    /* xEventGroupWaitBits() returns the bits before the call returned, hence we can test which event actually
-     * happened. */
-    if (bits & WIFI_CONNECTED_BIT) {
+    // xEventGroupWaitBits() returns the bits before the call returned, hence we can test which event actually happened.
+    if (bits & WIFI_CONNECTED_EVENT) {
         ESP_LOGI(TAG, "connected to ap");
-    } else if (bits & WIFI_FAIL_BIT) {
+    } else if (bits & WIFI_FAIL_EVENT) {
         ESP_LOGI(TAG, "Failed to connect to AP ...");
     } else {
         ESP_LOGE(TAG, "UNEXPECTED EVENT");
@@ -285,6 +453,7 @@ void wifi_init_sta(void) {
     //ESP_ERROR_CHECK(esp_event_handler_unregister(WIFI_EVENT, ESP_EVENT_ANY_ID, &event_handler));
     //vEventGroupDelete(s_wifi_event_group);
 }
+#endif
 
 static const char * if_str[] = {"STA", "AP", "ETH", "MAX"};
 static const char * ip_protocol_str[] = {"V4", "V6", "MAX"};
@@ -449,9 +618,7 @@ int8_t server_now( int64_t *sNow ) {
 	}
 
 	if (get_diff_to_server(&diff) == -1) {
-		ESP_LOGE(TAG, "server_now: can't get diff to server");
-
-		return -1;
+		ESP_LOGW(TAG, "server_now: can't get current diff to server. Retrieved old one");
 	}
 
 	if (diff == 0) {
@@ -841,6 +1008,8 @@ static void snapcast_sync_task(void *pvParameters) {
 						return;
 					}
 
+					adjust_apll(0);	// reset to normal playback speed
+
 					p_payload = chnk->payload;
 					size = chnk->size;
 					i2s_stop(i2s_cfg.i2s_port);
@@ -946,7 +1115,7 @@ static void snapcast_sync_task(void *pvParameters) {
 				avg = MEDIANFILTER_Insert(&shortMedianFilter, age);
 
 				// resync hard if we are off too far
-				if ((age < -1 * chunkDuration_us / 8) || (age > 1 * chunkDuration_us / 8) || (initialSync == 0)) {
+				if ((avg < -1 * chunkDuration_us / 8) || (avg > 1 * chunkDuration_us / 8) || (initialSync == 0)) {
 					free(chnk->payload);
 					free(chnk);
 					chnk = NULL;
@@ -954,10 +1123,6 @@ static void snapcast_sync_task(void *pvParameters) {
 					int64_t t;
 					get_diff_to_server(&t);
 					ESP_LOGW(TAG, "RESYNCING HARD 2 %lldus, %lldus", age, t);
-
-					if (initialSync == 1) {
-						adjust_apll(0);	// reset to normal playback speed
-					}
 
 					short_buffer_cnt = 0;
 					short_buffer_full = 0;
@@ -1039,6 +1204,8 @@ static void snapcast_sync_task(void *pvParameters) {
 			get_diff_to_server(&t);
 			ESP_LOGE(TAG, "Couldn't get PCM chunk, recv: messages waiting %d, %d, latency %lldus", uxQueueMessagesWaiting(pcmChunkQueueHandle), uxQueueMessagesWaiting(timestampQueueHandle), t);
 
+//			audio_element_abort_input_ringbuf(decoder);
+
 			reset_latency_buffer();		// ensure correct latencies, if there is no stream received from server.
 										// latency will be shorter if no wirechunks have to be serviced and decoded
 
@@ -1119,7 +1286,7 @@ static void http_get_task(void *pvParameters) {
         /* Wait for the callback to set the CONNECTED_BIT in the
            event group.
         */
-        xEventGroupWaitBits(s_wifi_event_group, WIFI_CONNECTED_BIT,
+        xEventGroupWaitBits(s_wifi_event_group, WIFI_CONNECTED_EVENT,
                             false, true, portMAX_DELAY);
         ESP_LOGI(TAG, "Connected to AP");
 
@@ -1405,7 +1572,15 @@ static void http_get_task(void *pvParameters) {
 						int bytesWritten;
 						bytesWritten = raw_stream_write(raw_stream_writer_to_decoder, wire_chunk_message.payload, (int)wire_chunk_message.size);
 						if (bytesWritten < 0) {
-							ESP_LOGE(TAG, "wirechnk decode ring buf timeout");
+							ESP_LOGE(TAG, "wirechnk decode ring buf timeout. bytes in buffer: %d/%d", rb_bytes_filled(audio_element_get_output_ringbuf(raw_stream_writer_to_decoder)),
+																									  audio_element_get_output_ringbuf_size(raw_stream_writer_to_decoder));
+
+//							rb_unblock_reader(audio_element_get_output_ringbuf(decoder));
+
+							//audio_element_abort_input_ringbuf(decoder);
+//							audio_element_set_input_timeout(decoder, pdMS_TO_TICKS(10));
+//							vTaskDelay(pdMS_TO_TICKS(12));
+//							audio_element_set_input_timeout(decoder, portMAX_DELAY);
 						}
 						else if (bytesWritten < (int)wire_chunk_message.size) {
 							ESP_LOGE(TAG, "wirechnk decode ring buf full");
@@ -1659,7 +1834,7 @@ void sntp_cb(struct timeval *tv) {
  *
  */
 void set_time_from_sntp() {
-    xEventGroupWaitBits(s_wifi_event_group, WIFI_CONNECTED_BIT,
+    xEventGroupWaitBits(s_wifi_event_group, WIFI_CONNECTED_EVENT,
                         false, true, portMAX_DELAY);
     //ESP_LOGI(TAG, "clock %");
 
@@ -1784,15 +1959,25 @@ void app_main(void) {
     esp_err_t ret;
     uint8_t base_mac[6];
 
+    ret = nvs_flash_init();
+	if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
+		/* NVS partition was truncated
+		 * and needs to be erased */
+		ESP_ERROR_CHECK(nvs_flash_erase());
 
-	ret = nvs_flash_init();
-    if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
-      ESP_ERROR_CHECK(nvs_flash_erase());
-      ret = nvs_flash_init();
-    }
-    ESP_ERROR_CHECK(ret);
+		/* Retry nvs_flash_init */
+		ESP_ERROR_CHECK(nvs_flash_init());
+	}
 
-    wifi_init_sta();
+	{	// init wifi
+		// Initialize TCP/IP
+		ESP_ERROR_CHECK(esp_netif_init());
+		// Initialize the event loop
+		ESP_ERROR_CHECK(esp_event_loop_create_default());
+		s_wifi_event_group = xEventGroupCreate();
+		wifi_init();
+	}
+
 
     esp_timer_init();
 
@@ -1834,6 +2019,8 @@ void app_main(void) {
 	flac_cfg.task_core = FLAC_DECODER_CORE_ID;
 	decoder = flac_decoder_init(&flac_cfg);
 	audio_element_set_write_cb(decoder, flac_decoder_write_cb, NULL);
+//	audio_element_set_input_timeout(decoder, pdMS_TO_TICKS(100));
+//	audio_element_set_output_timeout(decoder, pdMS_TO_TICKS(100));
 
     ESP_LOGI(TAG, "Register all elements to audio pipeline");
     audio_pipeline_register(flacDecodePipeline, raw_stream_writer_to_decoder, "raw_1");
