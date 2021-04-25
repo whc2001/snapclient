@@ -154,11 +154,22 @@ SemaphoreHandle_t timer0_syncSampleSemaphoreHandle = NULL;
 
 SemaphoreHandle_t latencyBufSemaphoreHandle = NULL;
 
-#define LATENCY_BUF_LEN 	199
+#define MEDIAN_FILTER_LONG_BUF_LEN 		599
+#define MEDIAN_FILTER_MINI_BUF_LEN 		199
+#define MEDIAN_FILTER_SHORT_BUF_LEN 	19
+
 uint8_t latencyBufCnt = 0;
 static int8_t latencyBuffFull = 0;
-static sMedianFilter_t latencyMedianFilter;
-static sMedianNode_t latencyMedianBuffer[LATENCY_BUF_LEN];
+
+static sMedianFilter_t latencyMedianFilterLong;
+static sMedianNode_t latencyMedianLongBuffer[MEDIAN_FILTER_LONG_BUF_LEN];
+
+static sMedianFilter_t latencyMedianFilterMini;
+static sMedianNode_t latencyMedianMiniBuffer[MEDIAN_FILTER_MINI_BUF_LEN];
+
+static sMedianFilter_t latencyMedianFilterShort;
+static sMedianNode_t latencyMedianShortBuffer[MEDIAN_FILTER_SHORT_BUF_LEN];
+
 static int64_t latencyToServer = 0;
 
 //buffer_.setSize(500);
@@ -212,8 +223,8 @@ static char mac_address[18];
 
 static EventGroupHandle_t s_wifi_event_group;
 
-const int WIFI_CONNECTED_EVENT = BIT0;
-const int WIFI_FAIL_EVENT  =    BIT1;
+const int WIFI_CONNECTED_EVENT 	= BIT0;
+const int WIFI_FAIL_EVENT  		= BIT1;
 
 static int s_retry_num = 0;
 
@@ -520,10 +531,26 @@ void find_mdns_service(const char * service_name, const char * proto) {
  */
 int8_t reset_latency_buffer(void) {
 	// init diff buff median filter
-	latencyMedianFilter.numNodes = LATENCY_BUF_LEN;
-    latencyMedianFilter.medianBuffer = latencyMedianBuffer;
-	if (MEDIANFILTER_Init(&latencyMedianFilter) < 0) {
-		ESP_LOGE(TAG, "reset_diff_buffer: couldn't init median filter. STOP");
+	latencyMedianFilterLong.numNodes = MEDIAN_FILTER_LONG_BUF_LEN;
+    latencyMedianFilterLong.medianBuffer = latencyMedianLongBuffer;
+	if (MEDIANFILTER_Init(&latencyMedianFilterLong) < 0) {
+		ESP_LOGE(TAG, "reset_diff_buffer: couldn't init median filter long. STOP");
+
+		return -2;
+	}
+
+	latencyMedianFilterMini.numNodes = MEDIAN_FILTER_MINI_BUF_LEN;
+	latencyMedianFilterMini.medianBuffer = latencyMedianMiniBuffer;
+	if (MEDIANFILTER_Init(&latencyMedianFilterMini) < 0) {
+		ESP_LOGE(TAG, "reset_diff_buffer: couldn't init median filter mini. STOP");
+
+		return -2;
+	}
+
+	latencyMedianFilterShort.numNodes = MEDIAN_FILTER_SHORT_BUF_LEN;
+    latencyMedianFilterShort.medianBuffer = latencyMedianShortBuffer;
+	if (MEDIANFILTER_Init(&latencyMedianFilterShort) < 0) {
+		ESP_LOGE(TAG, "reset_diff_buffer: couldn't init median filter short. STOP");
 
 		return -2;
 	}
@@ -553,17 +580,17 @@ int8_t reset_latency_buffer(void) {
 /**
  *
  */
-int8_t diff_buffer_full(void) {
+int8_t latency_buffer_full(void) {
 	int8_t tmp;
 
 	if (latencyBufSemaphoreHandle == NULL) {
-		ESP_LOGE(TAG, "diff_buffer_full: latencyBufSemaphoreHandle == NULL");
+		ESP_LOGE(TAG, "latency_buffer_full: latencyBufSemaphoreHandle == NULL");
 
 		return -2;
 	}
 
 	if (xSemaphoreTake( latencyBufSemaphoreHandle, 0) == pdFALSE) {
-		//ESP_LOGW(TAG, "diff_buffer_full: can't take semaphore");
+		//ESP_LOGW(TAG, "latency_buffer_full: can't take semaphore");
 
 		return -1;
 	}
@@ -947,26 +974,26 @@ static void snapcast_sync_task(void *pvParameters) {
 		}
 
 		if( ret == pdPASS )	{
-//			// wait for early time syncs to be ready
-			int tmp = diff_buffer_full();
-			if ( tmp <= 0 ) {
-				if (tmp < 0) {
-					vTaskDelay(1);
-
-					continue;
-				}
-
-				// free chunk so we can get next one
-				free(chnk->payload);
-				free(chnk);
-				chnk = NULL;
-
-//				ESP_LOGW(TAG, "diff buffer not full");
-
-				vTaskDelay( pdMS_TO_TICKS(100) );
-
-				continue;
-			}
+////			// wait for early time syncs to be ready
+//			int tmp = latency_buffer_full();
+//			if ( tmp <= 0 ) {
+//				if (tmp < 0) {
+//					vTaskDelay(1);
+//
+//					continue;
+//				}
+//
+//				// free chunk so we can get next one
+//				free(chnk->payload);
+//				free(chnk);
+//				chnk = NULL;
+//
+////				ESP_LOGW(TAG, "diff buffer not full");
+//
+//				vTaskDelay( pdMS_TO_TICKS(100) );
+//
+//				continue;
+//			}
 
 //			if (initialSync == 0)	// using this, latency on initial sync is stored and serverNow calculation is based solely on this value until next hard sync
 			if (1)					// always use newest, median filtered serverNow
@@ -984,7 +1011,7 @@ static void snapcast_sync_task(void *pvParameters) {
 					free(chnk);
 					chnk = NULL;
 
-					vTaskDelay( 1 );
+					vTaskDelay( pdMS_TO_TICKS(100) );
 
 					continue;
 				}
@@ -1275,10 +1302,26 @@ static void http_get_task(void *pvParameters) {
     	latencyBufCnt = 0;
 
     	// init diff buff median filter
-    	latencyMedianFilter.numNodes = LATENCY_BUF_LEN;
-        latencyMedianFilter.medianBuffer = latencyMedianBuffer;
-    	if (MEDIANFILTER_Init(&latencyMedianFilter) < 0) {
-    		ESP_LOGE(TAG, "reset_diff_buffer: couldn't init median filter. STOP");
+    	latencyMedianFilterLong.numNodes = MEDIAN_FILTER_LONG_BUF_LEN;
+        latencyMedianFilterLong.medianBuffer = latencyMedianLongBuffer;
+    	if (MEDIANFILTER_Init(&latencyMedianFilterLong) < 0) {
+    		ESP_LOGE(TAG, "reset_diff_buffer: couldn't init median filter long. STOP");
+
+    		return;
+    	}
+
+    	latencyMedianFilterMini.numNodes = MEDIAN_FILTER_MINI_BUF_LEN;
+    	latencyMedianFilterMini.medianBuffer = latencyMedianMiniBuffer;
+    	if (MEDIANFILTER_Init(&latencyMedianFilterMini) < 0) {
+    		ESP_LOGE(TAG, "reset_diff_buffer: couldn't init median filter mini. STOP");
+
+    		return;
+    	}
+
+    	latencyMedianFilterShort.numNodes = MEDIAN_FILTER_SHORT_BUF_LEN;
+        latencyMedianFilterShort.medianBuffer = latencyMedianShortBuffer;
+    	if (MEDIANFILTER_Init(&latencyMedianFilterShort) < 0) {
+    		ESP_LOGE(TAG, "reset_diff_buffer: couldn't init median filter short. STOP");
 
     		return;
     	}
@@ -1693,18 +1736,40 @@ static void http_get_task(void *pvParameters) {
 								reset_latency_buffer();
 							}
 
+							// use three median filters, so playback gets started faster. We only start if enough latencies are collected already
 							newValue = ((int64_t)tmpDiffToServer.tv_sec * 1000000LL + (int64_t)tmpDiffToServer.tv_usec);
-							medianValue = MEDIANFILTER_Insert(&latencyMedianFilter, newValue);
+							medianValue = MEDIANFILTER_Insert(&latencyMedianFilterLong, newValue);
+							if (medianValue == 0) {
+								medianValue = MEDIANFILTER_Insert(&latencyMedianFilterMini, newValue);
+								if (medianValue == 0) {
+									medianValue = MEDIANFILTER_Insert(&latencyMedianFilterShort, newValue);
+								}
+								else {
+									// if mini latency buffer is full, we stop initial flooding with time messages
+									if (latencyBuffFull == false) {
+										if (xSemaphoreTake( latencyBufSemaphoreHandle, portMAX_DELAY ) == pdTRUE) {
+											latencyBuffFull = true;
 
-							// TODO: find better way to check if Median Filter is full
-							// Count how much latencies we have stored so far
-							latencyBufCnt++;
-							if (latencyBufCnt >= LATENCY_BUF_LEN) {
-								latencyBuffFull = true;
+											xSemaphoreGive( latencyBufSemaphoreHandle );
+										}
+									}
+								}
 							}
 
-							if (xSemaphoreTake( latencyBufSemaphoreHandle, 1 ) == pdTRUE) {
-								latencyToServer =  medianValue;
+							if (xSemaphoreTake( latencyBufSemaphoreHandle, portMAX_DELAY ) == pdTRUE) {
+								// TODO: find better way to check if Median Filter is full
+								// Count how much latencies we have stored so far
+//								latencyBufCnt++;
+//								if (latencyBufCnt >= MEDIAN_FILTER_LONG_BUF_LEN) {
+//									latencyBuffFull = true;
+//								}
+
+//								if (latencyBuffFull == true) {
+									latencyToServer =  medianValue;
+//								}
+//								else {
+//									latencyToServer =  newValue;
+//								}
 
 								xSemaphoreGive( latencyBufSemaphoreHandle );
 							}
@@ -1719,7 +1784,11 @@ static void http_get_task(void *pvParameters) {
 							// we don't care if it was already taken, just make sure it is taken at this point
 							xSemaphoreTake( timeSyncSemaphoreHandle, 0 );
 
-							if (diff_buffer_full() > 0) {
+							// TODO: find better method to do initial fill of latency buffer
+							//		 it will always do that on a hard resync, this probably could
+							//		 generate lots of network traffic at some times
+							if (latency_buffer_full() > 0) {
+							//if (1) {
 								// we give timeSyncSemaphoreHandle after x µs through timer
 								esp_timer_start_periodic(timeSyncMessageTimer, 1000000);
 							}
