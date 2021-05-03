@@ -100,7 +100,7 @@ TaskHandle_t syncTaskHandle = NULL;
 
 #define CONFIG_USE_SNTP		0
 
-#define DAC_OUT_BUFFER_TIME_US		0//3500		// determined this by comparing a 180bpm metronome signal on a scope which is played by esp32 and ubuntu client
+#define DAC_OUT_BUFFER_TIME_US		3000		// determined this by comparing a 180bpm metronome signal on a scope which is played by esp32 and ubuntu client
 												// not sure why I need this though... And why it is so high. I'd expect something in the µs range??!
 
 static const char *TAG = "SC";
@@ -1120,6 +1120,7 @@ static void snapcast_sync_task(void *pvParameters) {
 //					size = chnk->size;
 					i2s_stop(i2s_cfg.i2s_port);
 //					i2s_zero_dma_buffer(i2s_cfg.i2s_port);
+					xQueueReset(i2s_event_queue);
 
 					i2sDmaBufferCnt = 0;
 
@@ -1137,7 +1138,7 @@ static void snapcast_sync_task(void *pvParameters) {
 					//p_payload += writtenBytes;	// TODO: produces heap error???
 
 					if (size == 0) {
-//						ESP_LOGI(TAG, "I2S can take more");
+						ESP_LOGI(TAG, "I2S can take more");
 
 						if (chnk != NULL) {
 							free(chnk->payload);
@@ -1260,12 +1261,14 @@ static void snapcast_sync_task(void *pvParameters) {
 
 			if (initialSync == 1) {
 				const uint8_t enableControlLoop = 1;
-				const int64_t age_expect = 48000;
+				const int64_t age_expect = -24000;
 				const int64_t maxOffset = 100;
 				const int64_t maxOffset_dropSample = 1000;
 
-				avg = MEDIANFILTER_Insert(&shortMedianFilter, age + age_expect);
-				//avg = age + age_expect;
+				avg = MEDIANFILTER_Insert(&shortMedianFilter, age + (-age_expect));
+				if ( MEDIANFILTER_isFull(&shortMedianFilter) == 0 ) {
+					avg = age + (-age_expect);
+				}
 
 				// resync hard if we are off too far
 				if ((avg < -1 * chunkDuration_us / 4) || (avg > 1 * chunkDuration_us / 4) || (initialSync == 0)) {
@@ -2163,6 +2166,7 @@ void setup_dsp_i2s(uint32_t sample_rate, i2s_port_t i2sNum)
   };
 
   i2s_driver_install(i2sNum, &i2s_config0, 7, &i2s_event_queue);
+  i2s_stop(i2sNum);
 //  i2s_zero_dma_buffer(I2S_NUM_0);
   i2s_set_pin(i2sNum, &pin_config0);
 }

@@ -33,10 +33,12 @@ typedef struct
     sMedianNode_t *ageHead;         //pointer to oldest value
     sMedianNode_t *valueHead;       //pointer to smallest value
     sMedianNode_t *medianHead;      //pointer to median value
+    unsigned int bufferCnt;
 } sMedianFilter_t;
 
 int MEDIANFILTER_Init(sMedianFilter_t *medianFilter);
 int64_t MEDIANFILTER_Insert(sMedianFilter_t *medianFilter, int64_t sample);
+uint8_t MEDIANFILTER_isFull(sMedianFilter_t *medianFilter);
 
 #ifdef __cplusplus
 }

@@ -17,10 +17,13 @@
 
 #include "MedianFilter.h"
 
+/**
+ *
+ */
 int MEDIANFILTER_Init(sMedianFilter_t *medianFilter)
 {
-    if(medianFilter && medianFilter->medianBuffer &&
-        (medianFilter->numNodes % 2) && (medianFilter->numNodes > 1))
+    if (medianFilter && medianFilter->medianBuffer &&
+       (medianFilter->numNodes % 2) && (medianFilter->numNodes > 1))
     {
         //initialize buffer nodes
         for(unsigned int i = 0; i < medianFilter->numNodes; i++)
@@ -35,12 +38,17 @@ int MEDIANFILTER_Init(sMedianFilter_t *medianFilter)
         medianFilter->valueHead = medianFilter->medianBuffer;
         medianFilter->medianHead = &medianFilter->medianBuffer[medianFilter->numNodes / 2];
 
+        medianFilter->bufferCnt = 0;
+
         return 0;
     }
 
     return -1;
 }
 
+/**
+ *
+ */
 int64_t MEDIANFILTER_Insert(sMedianFilter_t *medianFilter, int64_t sample)
 {
     unsigned int i;
@@ -88,6 +96,10 @@ int64_t MEDIANFILTER_Insert(sMedianFilter_t *medianFilter, int64_t sample)
     it->prevValue = newNode;
     newNode->nextValue = it;
 
+    if (medianFilter->bufferCnt < medianFilter->numNodes) {
+    	medianFilter->bufferCnt++;
+    }
+
     //adjust median node
     if(i >= (medianFilter->numNodes / 2))
     {
@@ -95,5 +107,17 @@ int64_t MEDIANFILTER_Insert(sMedianFilter_t *medianFilter, int64_t sample)
     }
 
     return medianFilter->medianHead->value;
+}
+
+/**
+ *
+ */
+uint8_t MEDIANFILTER_isFull(sMedianFilter_t *medianFilter) {
+    if (medianFilter->bufferCnt < medianFilter->numNodes) {
+    	return 0;
+    }
+    else {
+    	return 1;
+    }
 }
 
