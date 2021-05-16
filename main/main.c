@@ -111,8 +111,7 @@ TaskHandle_t i2STaskHandle = NULL;
 
 #define DAC_OUT_BUFFER_TIME_US	0
 
-int64_t i2sDmaLAtency		=	0;//3000//-8000//2000			// determined this by comparing a 180bpm metronome signal on a scope which is played by esp32 and ubuntu client
-												// not sure why I need this though... And why it is so high. I'd expect something in the µs range??!
+int64_t i2sDmaLAtency		=	0;
 
 static const char *TAG = "SC";
 
@@ -962,10 +961,6 @@ static void snapcast_sync_task(void *pvParameters) {
 
 	ESP_LOGI(TAG, "started sync task");
 
-    // create ringbuffer for i2s
-//    i2sRingBufferHandle = rb_create(chunkInBytes * 3, sizeof(char));	// can hold 2 chunks of audio
-//    xTaskCreatePinnedToCore(i2s_playback_task, "i2s_playback_task", 8*1024, NULL, I2S_TASK_PRIORITY, &i2STaskHandle, I2S_TASK_CORE_ID);
-
 	tg0_timer_init();		// initialize initial sync timer
 
 	initialSync = 0;
@@ -990,82 +985,9 @@ static void snapcast_sync_task(void *pvParameters) {
 
 	while(1) {
 		if (chnk == NULL) {
-//			ESP_LOGE(TAG, "msg waiting pcm %d ts %d", uxQueueMessagesWaiting(pcmChunkQueueHandle), uxQueueMessagesWaiting(timestampQueueHandle));
-
-			// TODO: use task notify from i2s task to unblock if we need data
-
-			//if ((initialSync == 0) && (i2sDmaBufferCnt == 0)) {
-//			bytesAvailable = rb_bytes_filled(i2sRingBufferHandle);
-//			if ((bytesAvailable >= 0) && (bytesAvailable <= 4608))
-			if (1)
-			{
-				if (initialSync == 1) {
-					// Wait to be notified how much has been transmitted by i2s task
-//					xTaskNotifyWait( pdFALSE,    		// Don't clear bits on entry.
-//									 ULONG_MAX,        	// Clear all bits on exit.
-//									 &notifiedValue, 	// Stores the notified value.
-//									 portMAX_DELAY
-//									);
-
-//					if (notifiedValue < chunkInBytes) {
-//						bytesAvailable = rb_bytes_filled(i2sRingBufferHandle);
-//						if (bytesAvailable > 0) {
-//							continue;
-//						}
-//					}
-				}
-
-				ret = xQueueReceive(pcmChunkQueueHandle, &chnk, pdMS_TO_TICKS(2000) );
-				if( ret != pdFAIL )	{
-//					ESP_LOGW(TAG, "got first pcm chunk");
-				}
-			}
-			else {
-//				ESP_LOGI(TAG, "Ringbuffer %d", bytesAvailable);
-				vTaskDelay(pdMS_TO_TICKS(1));
-
-				continue;
-//				ret = xQueueReceive(i2s_event_queue, &i2sEvent, pdMS_TO_TICKS(24) );
-//				if( ret != pdFAIL )	{
-//					if (i2sEvent.type == I2S_EVENT_TX_DONE) {
-////						ESP_LOGI(TAG, "I2S_EVENT_TX_DONE, %u", i2sDmaBufferCnt);
-//						if (i2sDmaBufferCnt > 0) {
-//							i2sDmaBufferCnt--;
-//							if ((initialSync == 0) && (i2sDmaBufferCnt == 0)) {
-//								i2s_stop(i2s_cfg.i2s_port);
-//
-//								continue;
-//							}
-//						}
-//
-//						if ((i2sDmaBufferCnt % 2) == 0) {
-//							ret = xQueueReceive(pcmChunkQueueHandle, &chnk, pdMS_TO_TICKS(10) );
-//							if( ret != pdFAIL )	{
-////								ESP_LOGW(TAG, "got next pcm chunk");
-//							}
-//							else {
-//								ESP_LOGW(TAG, "couldn't get pcm chunk %d %d", uxQueueMessagesWaiting(pcmChunkQueueHandle), uxQueueMessagesWaiting(timestampQueueHandle));
-//
-//								continue;
-//							}
-//						}
-//						else {
-////							ESP_LOGW(TAG, "continue");
-//
-//							continue;
-//						}
-//					}
-//					else {
-//						ESP_LOGW(TAG, "i2s unexpected event");
-//
-//						continue;
-//					}
-//				}
-//				else {
-//					ESP_LOGW(TAG, "no i2s events");
-//
-//					continue;
-//				}
+			ret = xQueueReceive(pcmChunkQueueHandle, &chnk, pdMS_TO_TICKS(2000) );
+			if( ret != pdFAIL )	{
+//				ESP_LOGW(TAG, "got pcm chunk");
 			}
 		}
 		else {
@@ -1075,39 +997,25 @@ static void snapcast_sync_task(void *pvParameters) {
 		}
 
 		if( ret != pdFAIL )	{
-//			if (initialSync == 0)	// using this, latency on initial sync is stored and serverNow calculation is based solely on this value until next hard sync
-			if (1)					// always use newest, median filtered serverNow
-			{
-				if (server_now(&serverNow) >= 0) {
-					age =   serverNow -
-							((int64_t)chnk->timestamp.sec * 1000000LL + (int64_t)chnk->timestamp.usec) -
-							(int64_t)taskCfg->buffer_us +
-							(int64_t)i2sDmaLAtency +
-							(int64_t)taskCfg->outputBufferDacTime_us;
-				}
-				else {
-					ESP_LOGW(TAG, "couldn't get server now");
-
-					if (chnk != NULL) {
-						free(chnk->payload);
-						free(chnk);
-						chnk = NULL;
-					}
-
-					vTaskDelay( pdMS_TO_TICKS(1) );
-
-					continue;
-				}
-			}
-			else {
-				struct timeval now;
-				gettimeofday(&now, NULL);
-				serverNow = ((int64_t)now.tv_sec * 1000000LL + (int64_t)now.tv_usec) + latencyInitialSync;
-
+			if (server_now(&serverNow) >= 0) {
 				age =   serverNow -
 						((int64_t)chnk->timestamp.sec * 1000000LL + (int64_t)chnk->timestamp.usec) -
 						(int64_t)taskCfg->buffer_us +
+						(int64_t)i2sDmaLAtency +
 						(int64_t)taskCfg->outputBufferDacTime_us;
+			}
+			else {
+				ESP_LOGW(TAG, "couldn't get server now");
+
+				if (chnk != NULL) {
+					free(chnk->payload);
+					free(chnk);
+					chnk = NULL;
+				}
+
+				vTaskDelay( pdMS_TO_TICKS(1) );
+
+				continue;
 			}
 
 			// wait for early time syncs to be ready
@@ -1118,22 +1026,6 @@ static void snapcast_sync_task(void *pvParameters) {
 
 					continue;
 				}
-
-//				audio_hal_set_mute(board_handle->audio_hal, 1);
-//
-//				size_t written;
-//				if (i2s_write(I2S_NUM_0, p_payload, (size_t)size, &written, portMAX_DELAY) != ESP_OK) {
-//					ESP_LOGE(TAG, "i2s_playback_task: I2S write error");
-//				}
-//				size -= written;
-//
-//				if ((chnk != NULL) && (size == 0)) {
-//					free(chnk->payload);
-//					free(chnk);
-//					chnk = NULL;
-//				}
-//
-//				continue;
 
 				if (age >= 0) {
 					if (chnk != NULL) {
@@ -1149,27 +1041,11 @@ static void snapcast_sync_task(void *pvParameters) {
 
 				continue;
 			}
-			else {
-//				audio_hal_set_mute(board_handle->audio_hal, 0);
-			}
-
 
 			if (chnk != NULL) {
 				p_payload = chnk->payload;
 				size = chnk->size;
 			}
-
-//			if ((initialSync == 0) && (i2sDmaBufferCnt > 0)) {
-//				ESP_LOGW(TAG, "waiting for i2s to empty %u", i2sDmaBufferCnt);
-//
-//				if (chnk != NULL) {
-//					free(chnk->payload);
-//					free(chnk);
-//					chnk = NULL;
-//				}
-//
-//				continue;
-//			}
 
 			if (age < 0) {		// get initial sync using hardware timer
 				if (initialSync == 0) {
@@ -1198,10 +1074,7 @@ static void snapcast_sync_task(void *pvParameters) {
 					}
 					*/
 
-
-
 					adjust_apll(0);	// reset to normal playback speed
-
 
 					i2s_zero_dma_buffer(i2s_cfg.i2s_port);
 					i2s_stop(i2s_cfg.i2s_port);
@@ -1213,172 +1086,11 @@ static void snapcast_sync_task(void *pvParameters) {
 					size -= written;
 					p_payload += written;
 
-	//				ESP_LOGI(TAG, "size %d", size);
-
 					if ((chnk != NULL) && (size == 0)) {
 						free(chnk->payload);
 						free(chnk);
 						chnk = NULL;
 					}
-
-
-
-//					i2s_stop(i2s_cfg.i2s_port);
-
-
-//					p_payload = chnk->payload;
-//					size = chnk->size;
-//					i2s_stop(i2s_cfg.i2s_port);
-//					i2s_zero_dma_buffer(i2s_cfg.i2s_port);
-//					xQueueReset(i2s_event_queue);
-
-					/*
-					// wait for i2s Task to reinitialize
-					ret = xTaskNotifyWait( pdFALSE,    		// Don't clear bits on entry.
-										   ULONG_MAX,        	// Clear all bits on exit.
-										   &notifiedValue, 	// Stores the notified value.
-										   0
-										  );
-
-					if ((notifiedValue != 0) || (ret == pdFAIL)) {
-						if (chnk != NULL) {
-							free(chnk->payload);
-							free(chnk);
-							chnk = NULL;
-						}
-
-						continue;
-					}
-
-					// prefill ringbuffer with 3 chunks
-					ESP_LOGW(TAG, "rb_write %d", size);
-					writtenBytes = rb_write(i2sRingBufferHandle, p_payload, size, pdMS_TO_TICKS( WIRE_CHUNK_DURATION_MS / 2 ));
-					size -= writtenBytes;
-					p_payload += writtenBytes;
-
-					if ((chnk != NULL) && (size == 0)) {
-						free(chnk->payload);
-						free(chnk);
-						chnk = NULL;
-
-						ret = xQueueReceive(pcmChunkQueueHandle, &chnk, portMAX_DELAY);
-						if( ret != pdFAIL )	{
-							p_payload = chnk->payload;
-							size = chnk->size;
-
-							ESP_LOGW(TAG, "rb_write %d", size);
-							writtenBytes = rb_write(i2sRingBufferHandle, p_payload, size, pdMS_TO_TICKS( WIRE_CHUNK_DURATION_MS / 2 ));
-							size -= writtenBytes;
-							p_payload += writtenBytes;
-
-							if ((chnk != NULL) && (size == 0)) {
-								free(chnk->payload);
-								free(chnk);
-								chnk = NULL;
-
-//								ret = xQueueReceive(pcmChunkQueueHandle, &chnk, portMAX_DELAY);
-//								if( ret != pdFAIL )	{
-//									p_payload = chnk->payload;
-//									size = chnk->size;
-//
-//									ESP_LOGW(TAG, "rb_write %d", size);
-//									writtenBytes = rb_write(i2sRingBufferHandle, p_payload, size, pdMS_TO_TICKS( WIRE_CHUNK_DURATION_MS / 2 ));
-//									size -= writtenBytes;
-//									p_payload += writtenBytes;
-//
-//									if ((chnk != NULL) && (size == 0)) {
-//										free(chnk->payload);
-//										free(chnk);
-//										chnk = NULL;
-//									}
-//								}
-							}
-						}
-					}
-					*/
-
-//					i2sDmaBufferCnt = 0;
-
-//					size_t writtenBytes;
-//					int err = i2s_write(i2s_cfg.i2s_port, p_payload, size, &writtenBytes, pdMS_TO_TICKS(2000));
-//					if (err != ESP_OK) {
-//						ESP_LOGE(TAG, "I2S write error");
-//					}
-
-//					i2sDmaBufferCnt += 2;
-
-//					ESP_LOGE(TAG, "I2S written 1 %u / %u", writtenBytes, size);
-
-//					size -= writtenBytes;
-//					p_payload += writtenBytes;
-
-//					if (size == 0) {
-//						ESP_LOGI(TAG, "I2S can take more");
-//
-//						if (chnk != NULL) {
-//							free(chnk->payload);
-//							free(chnk);
-//							chnk = NULL;
-//						}
-//
-//						ret = xQueueReceive(pcmChunkQueueHandle, &chnk, portMAX_DELAY);
-//						if( ret != pdFAIL )	{
-//							p_payload = chnk->payload;
-//							size = chnk->size;
-//							err = i2s_write(i2s_cfg.i2s_port, p_payload, size, &writtenBytes, pdMS_TO_TICKS(2000));
-//							if (err != ESP_OK) {
-//								ESP_LOGE(TAG, "I2S write error");
-//							}
-//
-////							ESP_LOGE(TAG, "I2S written 2 %u / %u", writtenBytes, size);
-//
-//							i2sDmaBufferCnt += 2;
-//
-//							size -= writtenBytes;
-//							if (size != 0) {
-//								ESP_LOGE(TAG, "I2S check DMA buffer sizes, 1 chunk should fit in two DMA buffers! %u, %u", size, writtenBytes);
-//							}
-//
-//							if (chnk != NULL) {
-//								free(chnk->payload);
-//								free(chnk);
-//								chnk = NULL;
-//							}
-//
-//							//p_payload += writtenBytes;	// TODO: produces heap error???
-//						}
-//						else {
-//							ESP_LOGW(TAG, "I2S writing more not possible, couldn't get pcm chunk");
-//
-//							continue;
-//						}
-//					}
-
-//			        // Notify the task in the task's notification value that we almost got initial sync soo it can preload dma
-//			        xTaskNotify( i2STaskHandle,
-//			        			 2,
-//								 eSetValueWithOverwrite);
-
-					// ensure no notifications are pending from i2s task
-//					xTaskNotifyWait( pdFALSE,    		// Don't clear bits on entry.
-//									 ULONG_MAX,        	// Clear all bits on exit.
-//									 &notifiedValue, 	// Stores the notified value.
-//									 0
-//									);
-
-/*
-					tg0_timer1_start(-age - alarmValSub);			// alarm a little earlier to account for context switch duration from freeRTOS, timer with 1µs ticks
-					vTaskDelay(pdMS_TO_TICKS(-age / 1000));
-					// get timer value so we can get the real age
-					timer_get_counter_value(TIMER_GROUP_0, TIMER_1, &timer_val);
-					timer_pause(TIMER_GROUP_0, TIMER_1);
-					xTaskNotifyWait( pdFALSE,    		// Don't clear bits on entry.
-									 ULONG_MAX,        	// Clear all bits on exit.
-									 &notifiedValue, 	// Stores the notified value.
-									 0
-									);
-					age = (int64_t)timer_val - (-age);					// timer with 1µs ticks
-*/
 
 					//tg0_timer1_start((-age * 10) - alarmValSub));	// alarm a little earlier to account for context switch duration from freeRTOS, timer with 100ns ticks
 					tg0_timer1_start(-age - alarmValSub);			// alarm a little earlier to account for context switch duration from freeRTOS, timer with 1µs ticks
@@ -1400,48 +1112,11 @@ static void snapcast_sync_task(void *pvParameters) {
 					//age = ((int64_t)timer_val - (-age) * 10) / 10;	// timer with 100ns ticks
 					age = (int64_t)timer_val - (-age);					// timer with 1µs ticks
 
-
-
-					// TODO: try to get better initial sync using alarmValSub to alarm early,
-					//		 doesn't work with current style of loading i2s buffer early.
-//					if (((age < -11LL) || (age > 0)) && (initialSync == 0)) {
-//						if (age < -11LL) {
-//							alarmValSub--;
-//						}
-//						else {
-//							alarmValSub++;
-//						}
-//
-//						// free chunk so we can get next one
-//						if (chnk != NULL) {
-//							free(chnk->payload);
-//							free(chnk);
-//							chnk = NULL;
-//						}
-//
-//						int64_t t;
-//						get_diff_to_server(&t);
-//						ESP_LOGI(TAG, "no hard sync, age %lldus, %lldus", age, t);
-//
-//						vTaskDelay(pdMS_TO_TICKS((writtenBytes / 4) / 48) + 1);		// wait until i2s dma is empty
-//
-//						continue;
-//					}
-//					else if (initialSync == 0) {
-////						i2s_start(i2s_cfg.i2s_port);
-//
-//						ESP_LOGW(TAG, "start");
-//					}
-
-//					get_diff_to_server(&latencyInitialSync);	// store current latency for later use
-
 					if (i2s_write(I2S_NUM_0, p_payload, (size_t)size, &written, portMAX_DELAY) != ESP_OK) {
 						ESP_LOGE(TAG, "i2s_playback_task: I2S write error");
 					}
 					size -= written;
 					p_payload += written;
-
-//					ESP_LOGI(TAG, "size %d", size);
 
 					if ((chnk != NULL) && (size == 0))
 					{
@@ -1459,8 +1134,6 @@ static void snapcast_sync_task(void *pvParameters) {
 							size -= written;
 							p_payload += written;
 
-			//				ESP_LOGI(TAG, "size %d", size);
-
 							if ((chnk != NULL) && (size == 0)) {
 								free(chnk->payload);
 								free(chnk);
@@ -1471,16 +1144,7 @@ static void snapcast_sync_task(void *pvParameters) {
 
 					initialSync = 1;
 
-			        // Notify the task in the task's notification value that we got initial sync
-//			        xTaskNotify( i2STaskHandle,
-//			        			 initialSync,
-//								 eSetValueWithOverwrite);
-
 					ESP_LOGI(TAG, "initial sync %lldus", age);
-
-//					portYIELD();	// i2s task can start work now
-
-//					ESP_LOGW(TAG, "chunk %d %d", uxQueueMessagesWaiting(pcmChunkQueueHandle), uxQueueMessagesWaiting(timestampQueueHandle));
 
 					continue;
 				}
@@ -1501,13 +1165,6 @@ static void snapcast_sync_task(void *pvParameters) {
 				initialSync = 0;
 				alarmValSub = 0;
 
-		        // Notify the task in the task's notification value that we lost initial sync
-//		        xTaskNotify( i2STaskHandle,
-//		        			 initialSync,
-//							 eSetValueWithOverwrite);
-
-//		        portYIELD();	// i2s task probably needs to reinitialize before we can continue
-
 				continue;
 			}
 
@@ -1524,7 +1181,6 @@ static void snapcast_sync_task(void *pvParameters) {
 				}
 				else {
 					// resync hard if we are off too far
-	//				if (0) {
 					if ((avg < -hardResyncThreshold) || (avg > hardResyncThreshold) || (initialSync == 0)) {
 						if (chnk != NULL) {
 							free(chnk->payload);
@@ -1552,39 +1208,15 @@ static void snapcast_sync_task(void *pvParameters) {
 							}
 						} while(i2sDmaBufferCnt > 0);
 
-						// Notify the task in the task's notification value that we lost initial sync
-	//			        xTaskNotify( i2STaskHandle,
-	//			        			 initialSync,
-	//								 eSetValueWithOverwrite);
-
-//				        portYIELD();	// i2s task probably needs to reinitialize before we can continue
-
 						continue;
 					}
 				}
 
-//				size_t writtenBytes;
-//				int err = i2s_write(I2S_NUM_0, p_payload, size, &writtenBytes, pdMS_TO_TICKS(100));
-//				if (err != ESP_OK) {
-//					ESP_LOGE(TAG, "I2S write error");
-//				}
-//
-//				if (writtenBytes != size) {
-//					ESP_LOGE(TAG, "written too less %u %u", size, writtenBytes);
-//				}
-//
-//				i2sDmaBufferCnt += 2;
-
-				// NOT 100% SURE ABOUT THE FOLLOWING CONTROL LOOP, PROBABLY BETTER WAYS TO DO IT, STILL TESTING
 				int samples = 1;
 				int sampleSize = 4;
 				int ageDiff = 0;
 				size_t written;
 
-				// TODO: not sure how to do frame correction with current implementation
-				//		 which relies heavily on putting full chunks into I2S DMA buffer
-				//		 and tracking the buffer's fill state by counting events. Adding
-				//		 or deleting samples will confuse the algorithm...
 				if (enableControlLoop == 1) {
 					if (avg < -maxOffset) {		// we are early
 						dir = -1;
@@ -1613,12 +1245,6 @@ static void snapcast_sync_task(void *pvParameters) {
 
 								chnk->payload = p_payload;
 								chnk->size = size;
-
-								// insert samples
-	//							writtenBytes = rb_write(i2sRingBufferHandle, p_payload, samples * sampleSize, pdMS_TO_TICKS(12));
-//								if (i2s_write(I2S_NUM_0, p_payload, (size_t)size, &written, portMAX_DELAY) != ESP_OK) {
-//									ESP_LOGE(TAG, "i2s_playback_task: I2S write error");
-//								}
 							}
 						}
 						*/
@@ -1655,21 +1281,11 @@ static void snapcast_sync_task(void *pvParameters) {
 					adjust_apll(dir);
 				}
 
-//				writtenBytes = rb_write(i2sRingBufferHandle, p_payload, size, pdMS_TO_TICKS( WIRE_CHUNK_DURATION_MS / 2 ));
-////				ESP_LOGW(TAG, "rb_write %d/%d", writtenBytes, size);
-////				ESP_LOGI(TAG, "wrote %d samples", writtenBytes);
-//				size -= writtenBytes;
-//				p_payload += writtenBytes;
-
-
-
 				if (i2s_write(I2S_NUM_0, p_payload, (size_t)size, &written, portMAX_DELAY) != ESP_OK) {
 					ESP_LOGE(TAG, "i2s_playback_task: I2S write error");
 				}
 				size -= written;
 				p_payload += written;
-
-//				ESP_LOGI(TAG, "size %d", size);
 
 				if ((chnk != NULL) && (size == 0)) {
 					free(chnk->payload);
@@ -1681,7 +1297,6 @@ static void snapcast_sync_task(void *pvParameters) {
 			int64_t t;
 			get_diff_to_server(&t);
 			ESP_LOGI(TAG, "%d: %lldus, %lldus %lldus", dir, age, avg, t);
-//			ESP_LOGW(TAG, "chunk %d %d", uxQueueMessagesWaiting(pcmChunkQueueHandle), uxQueueMessagesWaiting(timestampQueueHandle));
 
 			if ((chnk != NULL) && (size == 0)) {
 				free(chnk->payload);
@@ -1694,20 +1309,10 @@ static void snapcast_sync_task(void *pvParameters) {
 			get_diff_to_server(&t);
 			ESP_LOGE(TAG, "Couldn't get PCM chunk, recv: messages waiting %d, %d, latency %lldus", uxQueueMessagesWaiting(pcmChunkQueueHandle), uxQueueMessagesWaiting(timestampQueueHandle), t);
 
-//			audio_element_abort_input_ringbuf(decoder);
-
-//			reset_latency_buffer();		// ensure correct latencies, if there is no stream received from server.
-//										// latency will be shorter if no wirechunks have to be serviced and decoded
-
 			dir = 0;
 
 			initialSync = 0;
 			alarmValSub = 0;
-
-	        // Notify the task in the task's notification value that we got initial sync
-//	        xTaskNotify( i2STaskHandle,
-//	        			 initialSync,
-//						 eSetValueWithOverwrite);
 		}
 	}
 }
@@ -2092,19 +1697,13 @@ static void http_get_task(void *pvParameters) {
 //						ESP_LOGI(TAG, "got wire chunk cnt %lld", wirechnkCnt );
 //						ESP_LOGI(TAG, "wirechnkCnt: %lld", wirechnkCnt);
 
-						if (strcmp(codecString, "flac") == 0) {
+						//if (strcmp(codecString, "flac") == 0) {
+						if (0) {		// flac not supported
 							int bytesWritten;
 							bytesWritten = raw_stream_write(raw_stream_writer_to_decoder, wire_chunk_message.payload, (int)wire_chunk_message.size);
 							if (bytesWritten < 0) {
 								ESP_LOGE(TAG, "wirechnk decode ring buf timeout. bytes in buffer: %d/%d", rb_bytes_filled(audio_element_get_output_ringbuf(raw_stream_writer_to_decoder)),
 																										  audio_element_get_output_ringbuf_size(raw_stream_writer_to_decoder));
-
-//							rb_unblock_reader(audio_element_get_output_ringbuf(decoder));
-
-							//audio_element_abort_input_ringbuf(decoder);
-//							audio_element_set_input_timeout(decoder, pdMS_TO_TICKS(10));
-//							vTaskDelay(pdMS_TO_TICKS(12));
-//							audio_element_set_input_timeout(decoder, portMAX_DELAY);
 							}
 							else if (bytesWritten < (int)wire_chunk_message.size) {
 								ESP_LOGE(TAG, "wirechnk decode ring buf full");
@@ -2133,14 +1732,11 @@ static void http_get_task(void *pvParameters) {
 								{
 									pcm_size = pcm_size * 2;
 
-	//								audio = (int16_t *)realloc(audio, pcm_size * CHANNELS * sizeof(int16_t)); // 960*2: 20ms, 960*1: 10ms
+									audio = (int16_t *)realloc(audio, pcm_size * CHANNELS * sizeof(int16_t)); // 960*2: 20ms, 960*1: 10ms
 
 									ESP_LOGI(TAG, "OPUS encoding buffer too small, resizing to %d samples per channel", pcm_size/channels);
 								}
 
-	//							pcm_size = 120;
-
-								//ESP_LOGI(TAG, "Size in: %d -> %d,%d",size,frame_size, pcm_size);
 								if (frame_size < 0 ) {
 									ESP_LOGE(TAG, "Decode error : %d, %d, %s, %s, %d\n", frame_size, size, start, (char *)audio, pcm_size/channels);
 
@@ -2154,28 +1750,13 @@ static void http_get_task(void *pvParameters) {
 										ESP_LOGE(TAG, "Failed to allocate memory for pcm chunk message");
 									}
 									else {
-										//write_ringbuf(audio, frame_size*2*sizeof(uint16_t));
 										pcm_chunk_message->size = frame_size * 2 * sizeof(uint16_t);
 										pcm_chunk_message->timestamp = timestamp;
 										pcm_chunk_message->payload = (char *)audio;
-	//									pcm_chunk_message->payload = (char *)heap_caps_malloc(frame_size * 2 * sizeof(uint16_t), MALLOC_CAP_SPIRAM);
-	//									if (pcm_chunk_message->payload == NULL) {
-	//										ESP_LOGE(TAG, "Failed to allocate memory for pcm chunk message payload");
-	//									}
-	//									else
-										{
-	//										memcpy(pcm_chunk_message->payload , (char *)audio, frame_size * 2 * sizeof(uint16_t));
-
-											if (xQueueSendToBack( pcmChunkQueueHandle, &pcm_chunk_message, pdMS_TO_TICKS(1000)) != pdTRUE) {
-												ESP_LOGW(TAG, "send: pcmChunkQueue full, messages waiting %d", uxQueueMessagesWaiting(pcmChunkQueueHandle));
-											}
-											else {
-												//ESP_LOGI(TAG, "flac_decoder_write_cb: pcm_chunk_message->size %u", pcm_chunk_message->size);
-											}
+										if (xQueueSendToBack( pcmChunkQueueHandle, &pcm_chunk_message, pdMS_TO_TICKS(1000)) != pdTRUE) {
+											ESP_LOGW(TAG, "send: pcmChunkQueue full, messages waiting %d", uxQueueMessagesWaiting(pcmChunkQueueHandle));
 										}
 									}
-
-	//								free(audio);
 								}
 							}
 						}
@@ -2282,60 +1863,14 @@ static void http_get_task(void *pvParameters) {
 								reset_latency_buffer();
 							}
 
-							// use three median filters, so playback gets started faster. We only start if enough latencies are collected already
 							newValue = ((int64_t)tmpDiffToServer.tv_sec * 1000000LL + (int64_t)tmpDiffToServer.tv_usec);
 							medianValue = MEDIANFILTER_Insert(&latencyMedianFilterLong, newValue);
-							/*
-							if (medianValue == 0) {
-								medianValue = MEDIANFILTER_Insert(&latencyMedianFilterMini, newValue);
-								if (medianValue == 0) {
-									medianValue = MEDIANFILTER_Insert(&latencyMedianFilterShort, newValue);
-								}
-								else {
-//									// if mini latency buffer is full, we stop initial flooding with time messages
-//									if (latencyBuffFull == false) {
-//										if (xSemaphoreTake(latencyBufSemaphoreHandle, portMAX_DELAY ) == pdTRUE) {
-//											latencyBuffFull = true;
-//
-//											xSemaphoreGive( latencyBufSemaphoreHandle );
-//										}
-//										else {
-//											ESP_LOGW(TAG, "Couldn't set latencyBuffFull = true");
-//										}
-//									}
-								}
-							}
-							else {
-//								if (latencyBuffFull == false) {
-//									if (xSemaphoreTake( latencyBufSemaphoreHandle, pdMS_TO_TICKS(1) ) == pdTRUE) {
-//										latencyBuffFull = true;
-//
-//										xSemaphoreGive( latencyBufSemaphoreHandle );
-//									}
-//									else {
-//										ESP_LOGW(TAG, "Couldn't set latencyBuffFull = true");
-//									}
-//								}
-							}
-							*/
-
 							if (xSemaphoreTake( latencyBufSemaphoreHandle, pdMS_TO_TICKS(1) ) == pdTRUE) {
 								if (MEDIANFILTER_isFull(&latencyMedianFilterLong)) {
 									latencyBuffFull = true;
 								}
-								// TODO: find better way to check if Median Filter is full
-								// Count how much latencies we have stored so far
-//								latencyBufCnt++;
-//								if (latencyBufCnt >= MEDIAN_FILTER_LONG_BUF_LEN) {
-//									latencyBuffFull = true;
-//								}
 
-//								if (latencyBuffFull == true) {
-									latencyToServer =  medianValue;
-//								}
-//								else {
-//									latencyToServer =  newValue;
-//								}
+								latencyToServer =  medianValue;
 
 								xSemaphoreGive( latencyBufSemaphoreHandle );
 							}
@@ -2350,11 +1885,7 @@ static void http_get_task(void *pvParameters) {
 							// we don't care if it was already taken, just make sure it is taken at this point
 							xSemaphoreTake( timeSyncSemaphoreHandle, 0 );
 
-							// TODO: find better method to do initial fill of latency buffer
-							//		 it will always do that on a hard resync, this probably could
-							//		 generate lots of network traffic at some times
 							if (latency_buffer_full() > 0) {
-							//if (1) {
 								// we give timeSyncSemaphoreHandle after x µs through timer
 								esp_timer_start_periodic(timeSyncMessageTimer, 1000000);
 							}
@@ -2421,7 +1952,18 @@ static void http_get_task(void *pvParameters) {
 			syncTaskHandle = NULL;
 
 			// TODO: do not just reset queue but free allocated memory too!
-			xQueueReset(timestampQueueHandle);
+			do {
+				wire_chunk_message_t *chnk = NULL;
+
+				BaseType_t ret = xQueueReceive(pcmChunkQueueHandle, &chnk, pdMS_TO_TICKS(2000) );
+				if( ret != pdFAIL )	{
+					if (chnk != NULL) {
+						free(chnk->payload);
+						free(chnk);
+						chnk = NULL;
+					}
+				}
+			} while (uxQueueMessagesWaiting(pcmChunkQueueHandle) > 0);
 			xQueueReset(pcmChunkQueueHandle);
 
 			wirechnkCnt = 0;
@@ -2499,62 +2041,6 @@ void set_time_from_sntp() {
      */
 }
 
-uint64_t flacCnt = 0;
-uint64_t receivedByteCnt = 0;
-
-int flac_decoder_write_cb(audio_element_handle_t el, char *buf, int len, TickType_t wait_time, void *ctx) {
-	wire_chunk_message_t *pcm_chunk_message;
-	tv_t timestamp;
-
-//	flacCnt++;
-//	receivedByteCnt += len;
-//	ESP_LOGI(TAG, "flac_decoder_write_cb: len %d, cnt %lld, received total: %lld", len, flacCnt, receivedByteCnt);
-//	ESP_LOGI(TAG, "flac_decoder_write_cb: flac cnt %lld",flacCnt);
-//	ESP_LOGI(TAG, "flac_decoder_write_cb: len %d", len);
-
-	if (xQueueReceive( timestampQueueHandle, &timestamp, wait_time ) == pdPASS) {
-		pcm_chunk_message = (wire_chunk_message_t *)heap_caps_malloc(sizeof(wire_chunk_message_t), MALLOC_CAP_SPIRAM);
-		if (pcm_chunk_message == NULL) {
-			ESP_LOGE(TAG, "wirechunk_to_pcm_timestamp_task: Failed to allocate memory for pcm chunk message");
-		}
-		else {
-			pcm_chunk_message->payload = (char *)heap_caps_malloc(sizeof(char) * len, MALLOC_CAP_SPIRAM);
-			if (pcm_chunk_message->payload == NULL) {
-				ESP_LOGE(TAG, "wirechunk_to_pcm_timestamp_task: Failed to allocate memory for pcm chunk payload");
-
-				free(pcm_chunk_message);
-			}
-			else {
-				pcm_chunk_message->size = len;
-				pcm_chunk_message->timestamp = timestamp;
-				memcpy(pcm_chunk_message->payload ,buf, len);
-
-				if (xQueueSendToBack( pcmChunkQueueHandle, &pcm_chunk_message, pdMS_TO_TICKS(1000)) != pdTRUE) {
-					ESP_LOGW(TAG, "wirechunk_to_pcm_timestamp_task: send: pcmChunkQueue full, messages waiting %d", uxQueueMessagesWaiting(pcmChunkQueueHandle));
-				}
-				else {
-					//ESP_LOGI(TAG, "flac_decoder_write_cb: pcm_chunk_message->size %u", pcm_chunk_message->size);
-				}
-			}
-		}
-	}
-	else {
-		ESP_LOGE(TAG, "wirechunk_to_pcm_timestamp_task: send: timestampQueue Empty");
-	}
-
-//	if (flacCnt == wirechnkCnt) {
-////		audio_element_set_input_timeout(decoder, portMAX_DELAY);
-////		audio_element_set_output_timeout(decoder, portMAX_DELAY);
-//
-//		wirechnkCnt = 0;
-//		flacCnt = 0;
-//		receivedByteCnt = 0;
-//
-//		ESP_LOGI(TAG, "flac_decoder_write_cb: clear decoder timeout");
-//	}
-
-	return len;
-}
 
 #define CONFIG_MASTER_I2S_BCK_PIN		5
 #define CONFIG_MASTER_I2S_LRCK_PIN		25
@@ -2574,7 +2060,7 @@ esp_err_t setup_dsp_i2s(uint32_t sample_rate, i2s_port_t i2sNum)
 	__dmaBufLen = chunkInFrames;
 	while ((__dmaBufLen >= __dmaBufMaxLen) || (__dmaBufCnt <= 1)) {
 		if (( __dmaBufLen % 2 ) == 0) {
-			__dmaBufCnt *= 2;		// we do double buffering of chunks at I2S DMA, so *4
+			__dmaBufCnt *= 2;
 			__dmaBufLen /= 2;
 		}
 		else {
@@ -2587,18 +2073,10 @@ esp_err_t setup_dsp_i2s(uint32_t sample_rate, i2s_port_t i2sNum)
 	i2sDmaLAtency = (1000000LL * __dmaBufLen / SAMPLE_RATE) * 0.8;		// this value depends on __dmaBufLen, optimized for __dmaBufLen = 480 @opus, 192000bps, complexity 5
 																		// it will be smaller for lower values of __dmaBufLen. The delay was measured against raspberry client
 																		// TODO: find a way to calculate this value without the need to measure delay to another client
-	//i2sDmaLAtency = 0;
 
-	i2sDmaBufCnt = __dmaBufCnt * 2 + 1;
+	i2sDmaBufCnt = __dmaBufCnt * 2 + 1;	// we do double buffering of chunks at I2S DMA, +1 needed because of the way i2s driver works, it will only allocate (i2sDmaBufCnt - 1) queue elements
 
 	ESP_LOGI(TAG, "setup_dsp_i2s: dma_buf_len is %d, dma_buf_count is %d", __dmaBufLen, __dmaBufCnt*2);
-//	ESP_LOGI(TAG, "setup_dsp_i2s: we do double buffering of chunks at I2S DMA, so using dma_buf_count of %d", __dmaBufCnt * 2);
-
-//	if (chunkInFrames % __dmaBufCnt) {
-//		ESP_LOGE(TAG, "setup_dsp_i2s: Can't setup i2s with this configuation");
-//
-//		return -1;
-//	}
 
 	i2s_config_t i2s_config0 = {
 									.mode = I2S_MODE_MASTER | I2S_MODE_TX,                                  // Only TX
@@ -2622,180 +2100,9 @@ esp_err_t setup_dsp_i2s(uint32_t sample_rate, i2s_port_t i2sNum)
 									};
 
 	i2s_driver_install(i2sNum, &i2s_config0, 1, &i2s_event_queue);
-	//  i2s_stop(i2sNum);
-	//  i2s_zero_dma_buffer(I2S_NUM_0);
 	i2s_set_pin(i2sNum, &pin_config0);
 
  	return 0;
-}
-
-/**
- *
- */
-void i2s_playback_task(void *args) {
-	size_t writtenBytes, writtenBytesAccumulated = 0;
-	const int chunkInFrames = chunkInBytes /  (CHANNELS * (BITS_PER_SAMPLE / 8));
-	int size;
-	//char payload[chunkInFrames];	// TODO: size needs to be calculated depending on sample rate, channels, etc. Should match DMA dma_buf_len
-	char payload[chunkInBytes];
-	uint32_t notifiedValue = 0;
-	int err;
-	int bytesAvailable;
-	int readBytes = 0;
-
-	while(1) {
-		switch (notifiedValue) {
-			case 0:		// no initial sync
-			{
-//				ESP_LOGI(TAG, "i2s_playback_task: initial sync %u", notifiedValue);
-
-				writtenBytesAccumulated = 0;
-
-				if (rb_reset(i2sRingBufferHandle) != ESP_OK) {
-					ESP_LOGE(TAG, "i2s_playback_task: couldn't reset i2sRingBufferHandle");
-					vTaskDelay(1);
-
-					continue;
-				}
-
-//				i2s_zero_dma_buffer(I2S_NUM_0);		// this writes any data still preset out on i2s and then sets all bytes of buffer to 0
-//				i2s_stop(I2S_NUM_0);					// stop i2s playback
-
-//				ESP_LOGI(TAG, "i2s_playback_task: initialize done");
-
-				 // Notify the task that we are finished initializing
-				xTaskNotify( syncTaskHandle,
-							 writtenBytesAccumulated,
-							 eSetValueWithOverwrite);
-
-				// now we wait for sync task to notify us of initial sync
-				xTaskNotifyWait( pdFALSE,    		// Don't clear bits on entry.
-								 pdFALSE,        	// Don't clear bits on exit.
-								 &notifiedValue, 	// Stores the notified value.
-								 portMAX_DELAY		// block indefinitely
-								);
-
-				if (notifiedValue == 1) {
-//					ESP_LOGI(TAG, "i2s_playback_task: initial sync %u", notifiedValue);
-
-					i2s_start(I2S_NUM_0);	// ensure it is running
-				}
-				else {
-//					ESP_LOGW(TAG, "i2s_playback_task: something went wrong on initial sync %u", notifiedValue);
-
-					notifiedValue = 0;
-				}
-
-				break;
-			}
-
-			case 1:		// got initial sync
-			{
-				xTaskNotifyWait( pdFALSE,    		// Don't clear bits on entry.
-								 pdFALSE,        	// Don't clear bits on exit.
-								 &notifiedValue, 	// Stores the notified value.
-								 0					// don't block
-								);
-
-				if (notifiedValue == 1) {
-					bytesAvailable = rb_bytes_filled(i2sRingBufferHandle);
-
-					if (bytesAvailable) {
-						// test if we have just part of a full chunk in buffer, because of frame dropping
-						if ((bytesAvailable % chunkInBytes) == 0) {
-							readBytes = chunkInBytes;
-//							ESP_LOGW(TAG, "i2s_playback_task: full chunk %d", readBytes);
-						}
-						else {
-							readBytes = bytesAvailable % chunkInBytes;		// ring buffer is 2 chunks in size, so get the remainder of division by 2
-//							ESP_LOGW(TAG, "i2s_playback_task: fractional chunk %d", readBytes);
-						}
-
-						// to be safe, ceil length
-						if (readBytes > sizeof(payload)) {
-							readBytes = sizeof(payload);
-
-							ESP_LOGW(TAG, "i2s_playback_task: can't read more than %d Bytes from ringbuf", sizeof(payload));
-						}
-
-						size = rb_read(i2sRingBufferHandle, payload, readBytes, pdMS_TO_TICKS(WIRE_CHUNK_DURATION_MS));
-
-						if (size > 0) {
-							if (size != readBytes) {
-								ESP_LOGW(TAG, "i2s_playback_task: rb_read timed out %d", size);
-							}
-
-							// this function will block until all previously data has been written to DMA buffers
-							err = i2s_write(I2S_NUM_0, payload, (size_t)size, &writtenBytes, pdMS_TO_TICKS(WIRE_CHUNK_DURATION_MS));
-							if (err != ESP_OK) {
-								ESP_LOGE(TAG, "i2s_playback_task: I2S write error");
-							}
-
-							if (size != writtenBytes) {
-								ESP_LOGE(TAG, "i2s_playback_task: couldn't write all data");
-							}
-
-	//						writtenBytesAccumulated += writtenBytes;
-	//						if (writtenBytesAccumulated >= chunkInBytes) {
-	//							ESP_LOGI(TAG, "i2s_playback_task: writtenBytesAccumulated: %u", writtenBytesAccumulated);
-
-								// Notify sync task in the task's notification value that we sent (fractional) chunk
-								xTaskNotify( syncTaskHandle,
-											 writtenBytesAccumulated,
-											 eSetValueWithOverwrite);
-
-	//					        writtenBytesAccumulated -= chunkInBytes;
-	//						}
-	//						else {
-	//							// for dropping/inserting chunks to work properly we need this check
-	//							bytesAvailable = rb_bytes_filled(i2sRingBufferHandle);
-	//							if (bytesAvailable < sizeof(payload)) {
-	//								xTaskNotify( syncTaskHandle,
-	//											 writtenBytesAccumulated,
-	//											 eSetValueWithOverwrite);
-	//							}
-	//						}
-						}
-						else {
-							ESP_LOGW(TAG, "i2s_playback_task: size <= 0 %d", size);
-//							vTaskDelay(1);
-							portYIELD();
-						}	// ensure it is running
-
-					}
-					else {
-						ESP_LOGW(TAG, "i2s_playback_task: no data in ringbuf");
-//						vTaskDelay(1);
-						portYIELD();
-					}
-				}
-				else {
-					ESP_LOGE(TAG, "i2s_playback_task: need resync %d", notifiedValue);
-
-					notifiedValue = 0;
-				}
-
-				break;
-			}
-
-			default:
-			{
-				ESP_LOGE(TAG, "i2s_playback_task: undefined");
-
-				notifiedValue = 0;
-
-				break;
-			}
-		}
-	}
-
-	return;
-}
-
-void decoder_task(void *args) {
-	while(1) {
-		
-	}
 }
 
 /**
@@ -2809,8 +2116,8 @@ void app_main(void) {
 
     ret = nvs_flash_init();
 	if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
-		/* NVS partition was truncated
-		 * and needs to be erased */
+		// NVS partition was truncated
+		// and needs to be erased
 		ESP_ERROR_CHECK(nvs_flash_erase());
 
 		/* Retry nvs_flash_init */
@@ -2839,63 +2146,11 @@ void app_main(void) {
     ESP_LOGI(TAG, "Start codec chip");
     board_handle = audio_board_init();
     audio_hal_ctrl_codec(board_handle->audio_hal, AUDIO_HAL_CODEC_MODE_DECODE, AUDIO_HAL_CTRL_START);
-//    audio_hal_codec_i2s_iface_t i2sCfg = 	{
-//    											.mode = AUDIO_HAL_MODE_MASTER,
-//												.fmt = AUDIO_HAL_I2S_NORMAL,
-//												.samples = AUDIO_HAL_48K_SAMPLES,
-//												.bits = AUDIO_HAL_BIT_LENGTH_16BITS,
-//    										};
-//    audio_hal_codec_iface_config(board_handle->audio_hal, AUDIO_HAL_CODEC_MODE_DECODE, &i2sCfg);
     i2s_mclk_gpio_select(I2S_NUM_0, GPIO_NUM_0);
     ret = setup_dsp_i2s(48000, I2S_NUM_0);
     if (ret < 0) {
     	return;
     }
-
-/*   
-    ESP_LOGI(TAG, "Create audio pipeline for decoding");
-    audio_pipeline_cfg_t flac_dec_pipeline_cfg = DEFAULT_AUDIO_PIPELINE_CONFIG();
-    flacDecodePipeline = audio_pipeline_init(&flac_dec_pipeline_cfg);
-    AUDIO_NULL_CHECK(TAG, flacDecodePipeline, return);
-
-    ESP_LOGI(TAG, "Create raw stream to write data from snapserver to decoder");
-    raw_stream_cfg_t raw_1_cfg = RAW_STREAM_CFG_DEFAULT();
-    raw_1_cfg.type = AUDIO_STREAM_WRITER;
-    raw_stream_writer_to_decoder = raw_stream_init(&raw_1_cfg);
-    audio_element_set_output_timeout(raw_stream_writer_to_decoder, pdMS_TO_TICKS(1000));
-
-    ESP_LOGI(TAG, "Create flac decoder to decode flac file and set custom write callback");
-	flac_decoder_cfg_t flac_cfg = DEFAULT_FLAC_DECODER_CONFIG();
-	flac_cfg.task_prio = FLAC_DECODER_PRIORITY;
-	flac_cfg.task_core = FLAC_DECODER_CORE_ID;
-	decoder = flac_decoder_init(&flac_cfg);
-	audio_element_set_write_cb(decoder, flac_decoder_write_cb, NULL);
-//	audio_element_set_input_timeout(decoder, pdMS_TO_TICKS(100));
-//	audio_element_set_output_timeout(decoder, pdMS_TO_TICKS(100));
-
-    ESP_LOGI(TAG, "Register all elements to audio pipeline");
-    audio_pipeline_register(flacDecodePipeline, raw_stream_writer_to_decoder, "raw_1");
-    audio_pipeline_register(flacDecodePipeline, decoder, "decoder");
-
-
-    ESP_LOGI(TAG, "Link it together [snapclient]-->raw_1-->decoder");
-	const char *link_tag[] = {"raw_1", "decoder"};
-    audio_pipeline_link(flacDecodePipeline, &link_tag[0], 2);
-
-    ESP_LOGI(TAG, "Set up  event listener");
-    audio_event_iface_cfg_t evt_cfg = AUDIO_EVENT_IFACE_DEFAULT_CFG();
-    audio_event_iface_handle_t evt = audio_event_iface_init(&evt_cfg);
-
-    ESP_LOGI(TAG, "Listening event from all elements of pipelines");
-    audio_pipeline_set_listener(flacDecodePipeline, evt);
-
-    ESP_LOGI(TAG, "Start audio_pipelines");
-    audio_pipeline_run(flacDecodePipeline);
-   */
-
-//    i2s_start(i2s_cfg.i2s_port);
-//    i2s_stop(i2s_cfg.i2s_port);
-//    i2s_zero_dma_buffer(i2s_cfg.i2s_port);
 
     ESP_LOGI(TAG, "Listen for all pipeline events");
 
@@ -2980,43 +2235,9 @@ void app_main(void) {
         else if (msg.source_type == AUDIO_ELEMENT_TYPE_ELEMENT && msg.source == (void *) decoder) {
         	ESP_LOGW(TAG, "decoder status: %d", msg.cmd);
         }
-
-//        if (msg.source_type == AUDIO_ELEMENT_TYPE_ELEMENT && msg.source == (void *) raw_stream_writer_to_i2s
-//			&& msg.cmd == AEL_MSG_CMD_REPORT_STATUS && ((int)msg.data == AEL_STATUS_STATE_PAUSED || (int)msg.data == AEL_STATUS_STATE_RUNNING))
-//		{
-//        	if ((int)msg.data == AEL_STATUS_STATE_PAUSED) {
-//        		ESP_LOGW(TAG, "raw_stream_writer_to_i2s pause event received");
-//        	}
-//        	else if ((int)msg.data == AEL_STATUS_STATE_RUNNING) {
-//        		ESP_LOGW(TAG, "raw_stream_writer_to_i2s run event received");
-//        	}
-//        	else {
-//        		ESP_LOGW(TAG, "raw_stream_writer_to_i2s unknown event received: %d", (int)msg.data);
-//        	}
-//		}
- */
+        */
     }
 
-    /*
-    ESP_LOGI(TAG, "Stop audio_pipeline");
-    audio_pipeline_stop(flacDecodePipeline);
-    audio_pipeline_wait_for_stop(flacDecodePipeline);
-    audio_pipeline_terminate(flacDecodePipeline);
-
-    audio_pipeline_unregister(flacDecodePipeline, raw_stream_writer_to_decoder);
-    audio_pipeline_unregister(flacDecodePipeline, decoder);
-
-    // Terminal the pipeline before removing the listener
-    audio_pipeline_remove_listener(flacDecodePipeline);
-
-    // Make sure audio_pipeline_remove_listener & audio_event_iface_remove_listener are called before destroying event_iface
-    audio_event_iface_destroy(evt);
-
-    // Release all resources
-    audio_pipeline_deinit(flacDecodePipeline);
-    audio_element_deinit(raw_stream_writer_to_decoder);
-    audio_element_deinit(decoder);
-*/
     // TODO: clean up all created tasks and delete them
 }
 
