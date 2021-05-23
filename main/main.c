@@ -237,10 +237,6 @@ const int WIFI_FAIL_EVENT  		= BIT1;
 
 static int s_retry_num = 0;
 
-
-void i2s_playback_task(void *args);
-
-
 // Event handler for catching system events
 static void event_handler(void* arg, esp_event_base_t event_base, int event_id, void* event_data) {
     if (event_base == WIFI_PROV_EVENT) {
@@ -711,8 +707,8 @@ void IRAM_ATTR timer_group0_isr(void *para) {
 
         // Notify the task in the task's notification value.
         xTaskNotifyFromISR( syncTaskHandle,
-                            1,
-                            eSetBits,
+                            0,
+							eNoAction,
                             &xHigherPriorityTaskWoken );
     }
 
@@ -721,6 +717,10 @@ void IRAM_ATTR timer_group0_isr(void *para) {
 	if( xHigherPriorityTaskWoken )	{
 		portYIELD_FROM_ISR ();
 	}
+}
+
+static void tg0_timer_deinit(void) {
+	timer_deinit(TIMER_GROUP_0, TIMER_1);
 }
 
 /*
@@ -939,7 +939,7 @@ void adjust_apll(int8_t direction) {
  *
  */
 static void snapcast_sync_task(void *pvParameters) {
-	snapcast_sync_task_cfg_t *taskCfg = (snapcast_sync_task_cfg_t *)pvParameters;
+//	snapcast_sync_task_cfg_t *taskCfg = (snapcast_sync_task_cfg_t *)pvParameters;
 	wire_chunk_message_t *chnk = NULL;
 	int64_t serverNow = 0;
 	int64_t age;
@@ -958,13 +958,15 @@ static void snapcast_sync_task(void *pvParameters) {
 	i2s_event_t i2sEvent;
 	uint32_t i2sDmaBufferCnt = 0;
 	int writtenBytes, bytesAvailable;
+	int64_t buffer_ms_local = buffer_ms;
 
 	ESP_LOGI(TAG, "started sync task");
 
-	tg0_timer_init();		// initialize initial sync timer
+//	tg0_timer_init();		// initialize initial sync timer
 
 	initialSync = 0;
 
+	currentDir = 1;		// force adjust_apll to set correct playback speed
 	adjust_apll(0);
 
 	miniMedianFilter.numNodes = MINI_BUFFER_LEN;
@@ -984,6 +986,15 @@ static void snapcast_sync_task(void *pvParameters) {
 	}
 
 	while(1) {
+		// get notification value which holds buffer_ms as communicated by snapserver
+		xTaskNotifyWait( pdFALSE,    		// Don't clear bits on entry.
+						 pdFALSE,        	// Don't clear bits on exit
+						 &notifiedValue, 	// Stores the notified value.
+						 0
+						);
+
+		buffer_ms_local = (int64_t)notifiedValue * 1000LL;
+
 		if (chnk == NULL) {
 			ret = xQueueReceive(pcmChunkQueueHandle, &chnk, pdMS_TO_TICKS(2000) );
 			if( ret != pdFAIL )	{
@@ -992,7 +1003,6 @@ static void snapcast_sync_task(void *pvParameters) {
 		}
 		else {
 //			ESP_LOGW(TAG, "already retrieved chunk needs service");
-
 			ret = pdPASS;
 		}
 
@@ -1000,9 +1010,9 @@ static void snapcast_sync_task(void *pvParameters) {
 			if (server_now(&serverNow) >= 0) {
 				age =   serverNow -
 						((int64_t)chnk->timestamp.sec * 1000000LL + (int64_t)chnk->timestamp.usec) -
-						(int64_t)taskCfg->buffer_us +
+						(int64_t)buffer_ms_local +
 						(int64_t)i2sDmaLAtency +
-						(int64_t)taskCfg->outputBufferDacTime_us;
+						(int64_t)DAC_OUT_BUFFER_TIME_US;
 			}
 			else {
 				ESP_LOGW(TAG, "couldn't get server now");
@@ -1018,10 +1028,13 @@ static void snapcast_sync_task(void *pvParameters) {
 				continue;
 			}
 
+			/*
 			// wait for early time syncs to be ready
 			int tmp = latency_buffer_full();
 			if ( tmp <= 0 ) {
 				if (tmp < 0) {
+					ESP_LOGW(TAG, "test");
+
 					vTaskDelay(1);
 
 					continue;
@@ -1041,6 +1054,7 @@ static void snapcast_sync_task(void *pvParameters) {
 
 				continue;
 			}
+			*/
 
 			if (chnk != NULL) {
 				p_payload = chnk->payload;
@@ -1097,7 +1111,7 @@ static void snapcast_sync_task(void *pvParameters) {
 
 					// Wait to be notified of a timer interrupt.
 					xTaskNotifyWait( pdFALSE,    		// Don't clear bits on entry.
-									 ULONG_MAX,        	// Clear all bits on exit.
+									 pdFALSE,        	// Don't clear bits on exit.
 									 &notifiedValue, 	// Stores the notified value.
 									 portMAX_DELAY
 									);
@@ -1334,15 +1348,15 @@ void time_sync_msg_cb(void *args) {
 static void http_get_task(void *pvParameters) {
     struct sockaddr_in servaddr;
     char *start;
-    int sockfd;
+    int sockfd = -1;
     char base_message_serialized[BASE_MESSAGE_SIZE];
-    char *hello_message_serialized;
+    char *hello_message_serialized = NULL;
     int result, size, id_counter;
     struct timeval now, tv1, tv2, tv3;
     time_message_t time_message;
     struct timeval tmpDiffToServer;
     const int64_t outputBufferDacTime_us = DAC_OUT_BUFFER_TIME_US;	// in ms
-    snapcast_sync_task_cfg_t snapcastTaskCfg;
+//    snapcast_sync_task_cfg_t snapcastTaskCfg;
 	struct timeval lastTimeSync = { 0, 0 };
 	wire_chunk_message_t wire_chunk_message_last = {{0,0}, 0, NULL};
 	esp_timer_handle_t timeSyncMessageTimer;
@@ -1371,6 +1385,9 @@ static void http_get_task(void *pvParameters) {
 											  pcmChunkQueueStorageArea,
 											  &pcmChunkQueue
 											);
+
+    ESP_LOGI(TAG, "Enable mdns") ;
+    mdns_init();
 
     while(1) {
     	latencyBufCnt = 0;
@@ -1403,20 +1420,18 @@ static void http_get_task(void *pvParameters) {
         /* Wait for the callback to set the CONNECTED_BIT in the
            event group.
         */
-        xEventGroupWaitBits(s_wifi_event_group, WIFI_CONNECTED_EVENT,
-                            false, true, portMAX_DELAY);
-        ESP_LOGI(TAG, "Connected to AP");
+//        xEventGroupWaitBits(s_wifi_event_group, WIFI_CONNECTED_EVENT,
+//                            false, true, portMAX_DELAY);
+//        ESP_LOGI(TAG, "Connected to AP");
 
         // Find snapcast server
         // Connect to first snapcast server found
-        ESP_LOGI(TAG, "Enable mdns") ;
-        mdns_init();
         mdns_result_t * r = NULL;
         esp_err_t err = 0;
         while ( !r || err ) {
         	ESP_LOGI(TAG, "Lookup snapcast service on network");
            esp_err_t err = mdns_query_ptr("_snapcast", "_tcp", 3000, 20,  &r);
-           if(err){
+           if(err) {
              ESP_LOGE(TAG, "Query Failed");
            }
            if(!r){
@@ -1480,25 +1495,42 @@ static void http_get_task(void *pvParameters) {
 											2,
 										 };
 
-        hello_message_serialized = hello_message_serialize(&hello_message, (size_t*) &(base_message.size));
-        if (!hello_message_serialized) {
-            ESP_LOGI(TAG, "Failed to serialize hello message\r\b");
-            return;
+        if (hello_message_serialized == NULL) {
+			hello_message_serialized = hello_message_serialize(&hello_message, (size_t*) &(base_message.size));
+			if (!hello_message_serialized) {
+				ESP_LOGE(TAG, "Failed to serialize hello message\r\b");
+				return;
+			}
         }
 
         result = base_message_serialize(
-            &base_message,
-            base_message_serialized,
-            BASE_MESSAGE_SIZE
-        );
+											&base_message,
+											base_message_serialized,
+											BASE_MESSAGE_SIZE
+										);
         if (result) {
-            ESP_LOGI(TAG, "Failed to serialize base message\r\n");
+            ESP_LOGE(TAG, "Failed to serialize base message\r\n");
             return;
         }
 
-        write(sockfd, base_message_serialized, BASE_MESSAGE_SIZE);
-        write(sockfd, hello_message_serialized, base_message.size);
+        result = write(sockfd, base_message_serialized, BASE_MESSAGE_SIZE);
+        if (result < 0) {
+        	ESP_LOGW(TAG, "error writing base msg to socket: %s", strerror(errno));
+        	free(hello_message_serialized);
+        	hello_message_serialized = NULL;
+			continue;
+		}
+
+        result = write(sockfd, hello_message_serialized, base_message.size);
+        if (result < 0) {
+        	ESP_LOGW(TAG, "error writing hello msg to socket: %s", strerror(errno));
+        	free(hello_message_serialized);
+        	hello_message_serialized = NULL;
+			continue;
+		}
+
         free(hello_message_serialized);
+        hello_message_serialized = NULL;
 
         for (;;) {
             size = 0;
@@ -1514,8 +1546,10 @@ static void http_get_task(void *pvParameters) {
 
             if (result < 0) {
             	if (errno != 0 ) {
-            		ESP_LOGI(TAG, "%s", strerror(errno));
+            		ESP_LOGW(TAG, "%s, %d", strerror(errno), errno);
             	}
+
+            	// TODO: error handling needed for robust socket application
 
             	break;	// stop for(;;) will try to reconnect then
             }
@@ -1524,13 +1558,13 @@ static void http_get_task(void *pvParameters) {
 				result = gettimeofday(&now, NULL);
 				//ESP_LOGI(TAG, "time of day: %ld %ld", now.tv_sec, now.tv_usec);
 				if (result) {
-					ESP_LOGI(TAG, "Failed to gettimeofday");
+					ESP_LOGW(TAG, "Failed to gettimeofday");
 					continue;
 				}
 
 				result = base_message_deserialize(&base_message, buff, size);
 				if (result) {
-					ESP_LOGI(TAG, "Failed to read base message: %d", result);
+					ESP_LOGW(TAG, "Failed to read base message: %d", result);
 					continue;
 				}
 
@@ -1559,7 +1593,7 @@ static void http_get_task(void *pvParameters) {
 
 					result = read(sockfd, &(buff[size]), base_message.size - size);
 					if (result < 0) {
-						ESP_LOGI(TAG, "Failed to read from server: %d", result);
+						ESP_LOGW(TAG, "Failed to read from server: %d", result);
 
 						break;
 					}
@@ -1569,8 +1603,10 @@ static void http_get_task(void *pvParameters) {
 
 				if (result < 0) {
 					if (errno != 0 ) {
-						ESP_LOGI(TAG, "%s", strerror(errno));
+						ESP_LOGI(TAG, "%s, %d", strerror(errno), errno);
 					}
+
+					// TODO: error handling needed for robust socket application
 
 					break;	// stop for(;;) will try to reconnect then
 				}
@@ -1601,15 +1637,19 @@ static void http_get_task(void *pvParameters) {
 							uint16_t bits;
 							memcpy(&bits, start+8,sizeof(bits));
 							memcpy(&channels, start+10,sizeof(channels));
-							ESP_LOGI(TAG, "%s sampleformat: %d:%d:%d\n",codec_header_message.codec, rate, bits, channels);
+							ESP_LOGI(TAG, "%s sampleformat: %d:%d:%d",codec_header_message.codec, rate, bits, channels);
 
 							int error = 0;
+							if (opusDecoder != NULL) {
+								opus_decoder_destroy(opusDecoder);
+								opusDecoder = NULL;
+							}
 							opusDecoder = opus_decoder_create(rate, channels, &error);
 							if (error != 0) {
 								ESP_LOGI(TAG, "Failed to init %s decoder", codec_header_message.codec);
 
 							}
-							ESP_LOGI(TAG, "Initialized %s decoder: %d", codec_header_message.codec, error);
+							ESP_LOGI(TAG, "Initialized %s decoder", codec_header_message.codec);
 
 							//ESP_LOGI(TAG, "Codec : %s not implemented yet", codec_header_message.codec);
 
@@ -1674,13 +1714,16 @@ static void http_get_task(void *pvParameters) {
 						tv_d2.tv_sec = wire_chunk_message_last.timestamp.sec;
 						tv_d2.tv_usec = wire_chunk_message_last.timestamp.usec;
 						timersub(&tv_d1, &tv_d2, &tv_d3);
+						wire_chunk_message_last.timestamp = wire_chunk_message.timestamp;
 //						ESP_LOGI(TAG, "chunk duration %ld.%06ld", tv_d3.tv_sec, tv_d3.tv_usec);
 						if ((tv_d3.tv_sec * 1000000 + tv_d3.tv_usec) > (WIRE_CHUNK_DURATION_MS * 1000)) {
 							ESP_LOGE(TAG, "wire chnk with size: %d, timestamp %d.%d, duration %ld.%06ld", wire_chunk_message.size, wire_chunk_message.timestamp.sec, wire_chunk_message.timestamp.usec, tv_d3.tv_sec, tv_d3.tv_usec);
+
+							wire_chunk_message_free(&wire_chunk_message);
+
+							continue;
 						}
 
-
-						wire_chunk_message_last.timestamp = wire_chunk_message.timestamp;
 //
 //						// store chunk's timestamp, decoder callback will need it later
 						tv_t timestamp;
@@ -1719,6 +1762,7 @@ static void http_get_task(void *pvParameters) {
 						}
 						else if (strcmp(codecString, "opus") == 0) {
 							int frame_size = 0;
+
 							audio = (int16_t *)heap_caps_malloc(frameSize * CHANNELS * (BITS_PER_SAMPLE / 8), MALLOC_CAP_SPIRAM); // 960*2: 20ms, 960*1: 10ms
 							if (audio == NULL) {
 								ESP_LOGE(TAG, "Failed to allocate memory for opus audio decoder");
@@ -1755,6 +1799,26 @@ static void http_get_task(void *pvParameters) {
 										pcm_chunk_message->payload = (char *)audio;
 										if (xQueueSendToBack( pcmChunkQueueHandle, &pcm_chunk_message, pdMS_TO_TICKS(1000)) != pdTRUE) {
 											ESP_LOGW(TAG, "send: pcmChunkQueue full, messages waiting %d", uxQueueMessagesWaiting(pcmChunkQueueHandle));
+
+//											free(pcm_chunk_message->payload);
+//											free(pcm_chunk_message);
+
+											/*
+											// free all memory,
+											do {
+												wire_chunk_message_t *chnk = NULL;
+
+												BaseType_t ret = xQueueReceive(pcmChunkQueueHandle, &chnk, pdMS_TO_TICKS(1) );
+												if( ret != pdFAIL )	{
+													if (chnk != NULL) {
+														free(chnk->payload);
+														free(chnk);
+														chnk = NULL;
+													}
+												}
+											} while (uxQueueMessagesWaiting(pcmChunkQueueHandle) > 0);
+											xQueueReset(pcmChunkQueueHandle);
+											*/
 										}
 									}
 								}
@@ -1799,10 +1863,16 @@ static void http_get_task(void *pvParameters) {
 						if (syncTaskHandle == NULL) {
 							ESP_LOGI(TAG, "Start snapcast_sync_task");
 
-							snapcastTaskCfg.outputBufferDacTime_us = outputBufferDacTime_us;
-							snapcastTaskCfg.buffer_us = (int64_t)buffer_ms * 1000LL;
-							xTaskCreatePinnedToCore(snapcast_sync_task, "snapcast_sync_task", 8 * 1024, &snapcastTaskCfg, SYNC_TASK_PRIORITY, &syncTaskHandle, SYNC_TASK_CORE_ID);
+//							snapcastTaskCfg.outputBufferDacTime_us = outputBufferDacTime_us;
+//							snapcastTaskCfg.buffer_us = (int64_t)buffer_ms * 1000LL;
+							xTaskCreatePinnedToCore(snapcast_sync_task, "snapcast_sync_task", 8 * 1024, NULL, SYNC_TASK_PRIORITY, &syncTaskHandle, SYNC_TASK_CORE_ID);
 						}
+
+						// notify task of changed parameters
+						xTaskNotify( syncTaskHandle,
+									 buffer_ms,
+									 eSetBits
+									);
 
 					break;
 
@@ -1947,15 +2017,11 @@ static void http_get_task(void *pvParameters) {
         esp_timer_delete(timeSyncMessageTimer);
         xSemaphoreGive(timeSyncSemaphoreHandle);
 
-        if (syncTaskHandle != NULL) {
-			vTaskDelete(syncTaskHandle);
-			syncTaskHandle = NULL;
-
-			// TODO: do not just reset queue but free allocated memory too!
+//        if (syncTaskHandle != NULL) {
 			do {
 				wire_chunk_message_t *chnk = NULL;
 
-				BaseType_t ret = xQueueReceive(pcmChunkQueueHandle, &chnk, pdMS_TO_TICKS(2000) );
+				BaseType_t ret = xQueueReceive(pcmChunkQueueHandle, &chnk, pdMS_TO_TICKS(1) );
 				if( ret != pdFAIL )	{
 					if (chnk != NULL) {
 						free(chnk->payload);
@@ -1964,14 +2030,40 @@ static void http_get_task(void *pvParameters) {
 					}
 				}
 			} while (uxQueueMessagesWaiting(pcmChunkQueueHandle) > 0);
-			xQueueReset(pcmChunkQueueHandle);
+//			xQueueReset(pcmChunkQueueHandle);
 
-			wirechnkCnt = 0;
-			pcmchnkCnt = 0;
+//			vTaskDelete(syncTaskHandle);
+//			syncTaskHandle = NULL;
+//		}
+
+//        tg0_timer_deinit();
+
+        if (opusDecoder != NULL) {
+			opus_decoder_destroy(opusDecoder);
+			opusDecoder = NULL;
 		}
 
+        reset_latency_buffer();
+        if (xSemaphoreTake( latencyBufSemaphoreHandle, pdMS_TO_TICKS(1) ) == pdTRUE) {
+			latencyBuffFull = false;
+			latencyToServer =  0;
+
+			xSemaphoreGive( latencyBufSemaphoreHandle );
+		}
+		else {
+			ESP_LOGW(TAG, "couldn't reset latency");
+		}
+
+        if (sockfd != -1) {
+        	shutdown(sockfd, 0);
+        	//close(sockfd);
+        	closesocket(sockfd);
+
+        	sockfd = -1;
+        }
+
+
         ESP_LOGI(TAG, "... closing socket\r\n");
-        close(sockfd);
     }
 }
 
@@ -2134,6 +2226,8 @@ void app_main(void) {
 	}
 
     esp_timer_init();
+
+    tg0_timer_init();		// initialize initial sync timer
 
 	// Get MAC address for WiFi station
 	esp_read_mac(base_mac, ESP_MAC_WIFI_STA);
