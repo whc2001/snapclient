@@ -168,20 +168,12 @@ SemaphoreHandle_t timer0_syncSampleSemaphoreHandle = NULL;
 SemaphoreHandle_t latencyBufSemaphoreHandle = NULL;
 
 #define MEDIAN_FILTER_LONG_BUF_LEN 		299
-#define MEDIAN_FILTER_MINI_BUF_LEN 		199
-#define MEDIAN_FILTER_SHORT_BUF_LEN 	19
 
 uint8_t latencyBufCnt = 0;
 static int8_t latencyBuffFull = 0;
 
 static sMedianFilter_t latencyMedianFilterLong;
 static sMedianNode_t latencyMedianLongBuffer[MEDIAN_FILTER_LONG_BUF_LEN];
-
-static sMedianFilter_t latencyMedianFilterMini;
-static sMedianNode_t latencyMedianMiniBuffer[MEDIAN_FILTER_MINI_BUF_LEN];
-
-static sMedianFilter_t latencyMedianFilterShort;
-static sMedianNode_t latencyMedianShortBuffer[MEDIAN_FILTER_SHORT_BUF_LEN];
 
 static int64_t latencyToServer = 0;
 
@@ -193,15 +185,8 @@ static int64_t latencyToServer = 0;
 int64_t short_buffer[SHORT_BUFFER_LEN];
 int64_t short_buffer_median[SHORT_BUFFER_LEN];
 
-#define MINI_BUFFER_LEN	19
-int64_t mini_buffer[MINI_BUFFER_LEN];
-int64_t mini_buffer_median[MINI_BUFFER_LEN];
-
 static sMedianFilter_t shortMedianFilter;
 static sMedianNode_t shortMedianBuffer[SHORT_BUFFER_LEN];
-
-static sMedianFilter_t miniMedianFilter;
-static sMedianNode_t miniMedianBuffer[MINI_BUFFER_LEN];
 
 static int8_t currentDir = 0;	//!< current apll direction, see apll_adjust()
 
@@ -559,6 +544,7 @@ int8_t reset_latency_buffer(void) {
 		return -2;
 	}
 
+	/*
 	latencyMedianFilterMini.numNodes = MEDIAN_FILTER_MINI_BUF_LEN;
 	latencyMedianFilterMini.medianBuffer = latencyMedianMiniBuffer;
 	if (MEDIANFILTER_Init(&latencyMedianFilterMini) < 0) {
@@ -574,6 +560,7 @@ int8_t reset_latency_buffer(void) {
 
 		return -2;
 	}
+	*/
 
 	if (latencyBufSemaphoreHandle == NULL) {
 		ESP_LOGE(TAG, "reset_diff_buffer: latencyBufSemaphoreHandle == NULL");
@@ -969,14 +956,6 @@ static void snapcast_sync_task(void *pvParameters) {
 	currentDir = 1;		// force adjust_apll to set correct playback speed
 	adjust_apll(0);
 
-	miniMedianFilter.numNodes = MINI_BUFFER_LEN;
-	miniMedianFilter.medianBuffer = miniMedianBuffer;
-	if (MEDIANFILTER_Init(&miniMedianFilter) ) {
-		ESP_LOGE(TAG, "snapcast_sync_task: couldn't init miniMedianFilter. STOP");
-
-		return;
-	}
-
 	shortMedianFilter.numNodes = SHORT_BUFFER_LEN;
 	shortMedianFilter.medianBuffer = shortMedianBuffer;
 	if (MEDIANFILTER_Init(&shortMedianFilter) ) {
@@ -1348,7 +1327,7 @@ void time_sync_msg_cb(void *args) {
 static void http_get_task(void *pvParameters) {
     struct sockaddr_in servaddr;
     char *start;
-    int sockfd = -1;
+    int sock = -1;
     char base_message_serialized[BASE_MESSAGE_SIZE];
     char *hello_message_serialized = NULL;
     int result, size, id_counter;
@@ -1359,7 +1338,7 @@ static void http_get_task(void *pvParameters) {
 //    snapcast_sync_task_cfg_t snapcastTaskCfg;
 	struct timeval lastTimeSync = { 0, 0 };
 	wire_chunk_message_t wire_chunk_message_last = {{0,0}, 0, NULL};
-	esp_timer_handle_t timeSyncMessageTimer;
+	esp_timer_handle_t timeSyncMessageTimer = NULL;
 	const esp_timer_create_args_t tSyncArgs = 	{
 													.callback = &time_sync_msg_cb,
 													.name = "tSyncMsg"
@@ -1368,6 +1347,15 @@ static void http_get_task(void *pvParameters) {
 	int16_t *audio = NULL;
 	int16_t pcm_size = 120;
 	uint16_t channels = CHANNELS;
+	esp_err_t err = 0;
+	codec_header_message_t codec_header_message;
+	server_settings_message_t server_settings_message;
+	bool received_header = false;
+	base_message_t base_message;
+	hello_message_t hello_message;
+	mdns_result_t *r;
+
+
 
     // create semaphore for time diff buffer to server
     latencyBufSemaphoreHandle = xSemaphoreCreateMutex();
@@ -1386,86 +1374,89 @@ static void http_get_task(void *pvParameters) {
 											  &pcmChunkQueue
 											);
 
+    // init diff buff median filter
+	latencyMedianFilterLong.numNodes = MEDIAN_FILTER_LONG_BUF_LEN;
+	latencyMedianFilterLong.medianBuffer = latencyMedianLongBuffer;
+
     ESP_LOGI(TAG, "Enable mdns") ;
     mdns_init();
 
     while(1) {
-    	latencyBufCnt = 0;
-
-    	// init diff buff median filter
-    	latencyMedianFilterLong.numNodes = MEDIAN_FILTER_LONG_BUF_LEN;
-        latencyMedianFilterLong.medianBuffer = latencyMedianLongBuffer;
     	if (MEDIANFILTER_Init(&latencyMedianFilterLong) < 0) {
     		ESP_LOGE(TAG, "reset_diff_buffer: couldn't init median filter long. STOP");
 
     		return;
     	}
 
-    	latencyMedianFilterMini.numNodes = MEDIAN_FILTER_MINI_BUF_LEN;
-    	latencyMedianFilterMini.medianBuffer = latencyMedianMiniBuffer;
-    	if (MEDIANFILTER_Init(&latencyMedianFilterMini) < 0) {
-    		ESP_LOGE(TAG, "reset_diff_buffer: couldn't init median filter mini. STOP");
+		esp_timer_stop(timeSyncMessageTimer);
 
-    		return;
-    	}
+		xSemaphoreGive(timeSyncSemaphoreHandle);
 
-    	latencyMedianFilterShort.numNodes = MEDIAN_FILTER_SHORT_BUF_LEN;
-        latencyMedianFilterShort.medianBuffer = latencyMedianShortBuffer;
-    	if (MEDIANFILTER_Init(&latencyMedianFilterShort) < 0) {
-    		ESP_LOGE(TAG, "reset_diff_buffer: couldn't init median filter short. STOP");
+        if (opusDecoder != NULL) {
+			opus_decoder_destroy(opusDecoder);
+			opusDecoder = NULL;
+		}
 
-    		return;
-    	}
+        reset_latency_buffer();
+        if (xSemaphoreTake( latencyBufSemaphoreHandle, pdMS_TO_TICKS(1) ) == pdTRUE) {
+			latencyBuffFull = false;
+			latencyToServer =  0;
 
-        /* Wait for the callback to set the CONNECTED_BIT in the
-           event group.
-        */
-//        xEventGroupWaitBits(s_wifi_event_group, WIFI_CONNECTED_EVENT,
-//                            false, true, portMAX_DELAY);
-//        ESP_LOGI(TAG, "Connected to AP");
+			xSemaphoreGive( latencyBufSemaphoreHandle );
+		}
+		else {
+			ESP_LOGW(TAG, "couldn't reset latency");
+		}
 
         // Find snapcast server
         // Connect to first snapcast server found
-        mdns_result_t * r = NULL;
-        esp_err_t err = 0;
+        r = NULL;
+        err = 0;
         while ( !r || err ) {
         	ESP_LOGI(TAG, "Lookup snapcast service on network");
-           esp_err_t err = mdns_query_ptr("_snapcast", "_tcp", 3000, 20,  &r);
-           if(err) {
-             ESP_LOGE(TAG, "Query Failed");
-           }
-           if(!r){
-             ESP_LOGW(TAG, "No results found!");
-           }
-           vTaskDelay(1000/portTICK_PERIOD_MS);
+        	esp_err_t err = mdns_query_ptr("_snapcast", "_tcp", 3000, 20,  &r);
+        	if(err) {
+        		ESP_LOGE(TAG, "Query Failed");
+        	}
+
+        	if(!r){
+        		ESP_LOGW(TAG, "No results found!");
+        	}
+
+        	vTaskDelay(1000/portTICK_PERIOD_MS);
         }
-//        ESP_LOGI(TAG,"Found %08x", r->addr->addr.u_addr.ip4.addr);
-        ESP_LOGI(TAG,"Found %s", inet_ntoa(r->addr->addr.u_addr.ip4.addr));
+        
+        char serverAddr[] = "192.168.1.2";
+        ESP_LOGI(TAG,"Found %s:%d", inet_ntop(AF_INET, &(r->addr->addr.u_addr.ip4.addr), serverAddr, sizeof(serverAddr)), r->port);
 
         servaddr.sin_family = AF_INET;
-        servaddr.sin_addr.s_addr = r->addr->addr.u_addr.ip4.addr;          // inet_addr("192.168.1.158");
+        servaddr.sin_addr.s_addr = r->addr->addr.u_addr.ip4.addr;
         servaddr.sin_port = htons(r->port);
         mdns_query_results_free(r);
 
-        sockfd = socket(AF_INET, SOCK_STREAM, 0);
-        if(sockfd < 0) {
-            ESP_LOGE(TAG, "... Failed to allocate socket.");
-            vTaskDelay(1000 / portTICK_PERIOD_MS);
-            continue;
-        }
-        ESP_LOGI(TAG, "... allocated socket");
+		ESP_LOGI(TAG, "allocate socket");
+		sock = socket(AF_INET, SOCK_STREAM, 0);
+		if(sock < 0) {
+			ESP_LOGE(TAG, "... Failed to allocate socket.");
+			vTaskDelay(1000 / portTICK_PERIOD_MS);
+			continue;
+		}
+		ESP_LOGI(TAG, "... allocated socket %d", sock);
 
-        if (connect(sockfd, (struct sockaddr*)&servaddr, sizeof(servaddr)) != 0) {
-            ESP_LOGE(TAG, "%s", strerror(errno));
-            close(sockfd);
+		ESP_LOGI(TAG, "connect to socket");
+		err = connect(sock, (struct sockaddr*)&servaddr, sizeof(struct sockaddr_in));
+        if (err < 0) {
+            ESP_LOGE(TAG, "%s, %d", strerror(errno), errno);
+
+            shutdown(sock, 2);
+            closesocket(sock);
+
             vTaskDelay(4000 / portTICK_PERIOD_MS);
+
             continue;
         }
 
         ESP_LOGI(TAG, "... connected");
-
-        codec_header_message_t codec_header_message;
-        server_settings_message_t server_settings_message;
 
         result = gettimeofday(&now, NULL);
         if (result) {
@@ -1473,27 +1464,28 @@ static void http_get_task(void *pvParameters) {
             return;
         }
 
-        bool received_header = false;
-        base_message_t base_message = 	{
-											SNAPCAST_MESSAGE_HELLO,
-											0x0,
-											0x0,
-											{ now.tv_sec, now.tv_usec },
-											{ 0x0, 0x0 },
-											0x0,
-										};
+        received_header = false;
 
-        hello_message_t hello_message =  {
-											mac_address,
-											"ESP32-Caster",
-											VERSION_STRING,
-											"libsnapcast",
-											"esp32",
-											"xtensa",
-											1,
-											mac_address,
-											2,
-										 };
+        // init base mesage
+        base_message.type = SNAPCAST_MESSAGE_HELLO;
+        base_message.id = 0x0000;
+        base_message.refersTo = 0x0000;
+        base_message.sent.sec = now.tv_sec;
+        base_message.sent.usec = now.tv_usec;
+        base_message.received.sec = 0;
+        base_message.received.usec = 0;
+        base_message.size = 0x00000000;
+
+        // init hello message
+        hello_message.mac = mac_address;
+        hello_message.hostname = "ESP32-Caster";
+        hello_message.version = (char *)VERSION_STRING;
+        hello_message.client_name = "libsnapcast";
+        hello_message.os = "esp32";
+        hello_message.arch = "xtensa";
+        hello_message.instance = 1;
+        hello_message.id = mac_address;
+        hello_message.protocol_version = 2;
 
         if (hello_message_serialized == NULL) {
 			hello_message_serialized = hello_message_serialize(&hello_message, (size_t*) &(base_message.size));
@@ -1513,19 +1505,29 @@ static void http_get_task(void *pvParameters) {
             return;
         }
 
-        result = write(sockfd, base_message_serialized, BASE_MESSAGE_SIZE);
+        result = send(sock, base_message_serialized, BASE_MESSAGE_SIZE, 0);
         if (result < 0) {
         	ESP_LOGW(TAG, "error writing base msg to socket: %s", strerror(errno));
+
         	free(hello_message_serialized);
         	hello_message_serialized = NULL;
+
+            shutdown(sock, 2);
+            closesocket(sock);
+
 			continue;
 		}
 
-        result = write(sockfd, hello_message_serialized, base_message.size);
+        result = send(sock, hello_message_serialized, base_message.size, 0);
         if (result < 0) {
         	ESP_LOGW(TAG, "error writing hello msg to socket: %s", strerror(errno));
+
         	free(hello_message_serialized);
         	hello_message_serialized = NULL;
+
+            shutdown(sock, 2);
+            closesocket(sock);
+
 			continue;
 		}
 
@@ -1536,7 +1538,8 @@ static void http_get_task(void *pvParameters) {
             size = 0;
             result = 0;
             while (size < BASE_MESSAGE_SIZE) {
-            	result = read(sockfd, &(buff[size]), BASE_MESSAGE_SIZE - size);
+            	//result = read(sock, &(buff[size]), BASE_MESSAGE_SIZE - size);
+            	result = recv(sock, &(buff[size]), BASE_MESSAGE_SIZE - size, 0);
                 if (result < 0) {
                     break;
 
@@ -1546,10 +1549,11 @@ static void http_get_task(void *pvParameters) {
 
             if (result < 0) {
             	if (errno != 0 ) {
-            		ESP_LOGW(TAG, "%s, %d", strerror(errno), errno);
+            		ESP_LOGW(TAG, "1: %s, %d", strerror(errno), (int)errno);
             	}
 
-            	// TODO: error handling needed for robust socket application
+            	shutdown(sock, 2);
+				closesocket(sock);
 
             	break;	// stop for(;;) will try to reconnect then
             }
@@ -1591,7 +1595,7 @@ static void http_get_task(void *pvParameters) {
 						return;
 					}
 
-					result = read(sockfd, &(buff[size]), base_message.size - size);
+					result = recv(sock, &(buff[size]), base_message.size - size, 0);
 					if (result < 0) {
 						ESP_LOGW(TAG, "Failed to read from server: %d", result);
 
@@ -1603,10 +1607,11 @@ static void http_get_task(void *pvParameters) {
 
 				if (result < 0) {
 					if (errno != 0 ) {
-						ESP_LOGI(TAG, "%s, %d", strerror(errno), errno);
+						ESP_LOGI(TAG, "2: %s, %d", strerror(errno), (int)errno);
 					}
 
-					// TODO: error handling needed for robust socket application
+					shutdown(sock, 2);
+					closesocket(sock);
 
 					break;	// stop for(;;) will try to reconnect then
 				}
@@ -1802,23 +1807,6 @@ static void http_get_task(void *pvParameters) {
 
 //											free(pcm_chunk_message->payload);
 //											free(pcm_chunk_message);
-
-											/*
-											// free all memory,
-											do {
-												wire_chunk_message_t *chnk = NULL;
-
-												BaseType_t ret = xQueueReceive(pcmChunkQueueHandle, &chnk, pdMS_TO_TICKS(1) );
-												if( ret != pdFAIL )	{
-													if (chnk != NULL) {
-														free(chnk->payload);
-														free(chnk);
-														chnk = NULL;
-													}
-												}
-											} while (uxQueueMessagesWaiting(pcmChunkQueueHandle) > 0);
-											xQueueReset(pcmChunkQueueHandle);
-											*/
 										}
 									}
 								}
@@ -1827,6 +1815,7 @@ static void http_get_task(void *pvParameters) {
 						else {
 							ESP_LOGE(TAG, "Decoder not supported");
 						}
+
 
 						wire_chunk_message_free(&wire_chunk_message);
 
@@ -2003,67 +1992,32 @@ static void http_get_task(void *pvParameters) {
 					if (result) {
 						ESP_LOGI(TAG, "Failed to serialize time message\r\b");
 						continue;
+		 			}
+
+			        result = send(sock, base_message_serialized, BASE_MESSAGE_SIZE, 0);
+			        if (result < 0) {
+			        	ESP_LOGW(TAG, "error writing timesync base msg to socket: %s", strerror(errno));
+
+			            shutdown(sock, 2);
+			            closesocket(sock);
+
+						break;	// stop for(;;) will try to reconnect then
 					}
 
-					write(sockfd, base_message_serialized, BASE_MESSAGE_SIZE);
-					write(sockfd, buff, TIME_MESSAGE_SIZE);
+			        result = send(sock, buff, TIME_MESSAGE_SIZE, 0);
+					if (result < 0) {
+						ESP_LOGW(TAG, "error writing timesync msg to socket: %s", strerror(errno));
+
+						shutdown(sock, 2);
+						closesocket(sock);
+
+						break;	// stop for(;;) will try to reconnect then
+					}
 
 //					ESP_LOGI(TAG, "sent time sync message %ld.%06ld", now.tv_sec, now.tv_usec);
 				}
             }
         }
-
-        esp_timer_stop(timeSyncMessageTimer);
-        esp_timer_delete(timeSyncMessageTimer);
-        xSemaphoreGive(timeSyncSemaphoreHandle);
-
-//        if (syncTaskHandle != NULL) {
-			do {
-				wire_chunk_message_t *chnk = NULL;
-
-				BaseType_t ret = xQueueReceive(pcmChunkQueueHandle, &chnk, pdMS_TO_TICKS(1) );
-				if( ret != pdFAIL )	{
-					if (chnk != NULL) {
-						free(chnk->payload);
-						free(chnk);
-						chnk = NULL;
-					}
-				}
-			} while (uxQueueMessagesWaiting(pcmChunkQueueHandle) > 0);
-//			xQueueReset(pcmChunkQueueHandle);
-
-//			vTaskDelete(syncTaskHandle);
-//			syncTaskHandle = NULL;
-//		}
-
-//        tg0_timer_deinit();
-
-        if (opusDecoder != NULL) {
-			opus_decoder_destroy(opusDecoder);
-			opusDecoder = NULL;
-		}
-
-        reset_latency_buffer();
-        if (xSemaphoreTake( latencyBufSemaphoreHandle, pdMS_TO_TICKS(1) ) == pdTRUE) {
-			latencyBuffFull = false;
-			latencyToServer =  0;
-
-			xSemaphoreGive( latencyBufSemaphoreHandle );
-		}
-		else {
-			ESP_LOGW(TAG, "couldn't reset latency");
-		}
-
-        if (sockfd != -1) {
-        	shutdown(sockfd, 0);
-        	//close(sockfd);
-        	closesocket(sockfd);
-
-        	sockfd = -1;
-        }
-
-
-        ESP_LOGI(TAG, "... closing socket\r\n");
     }
 }
 
