@@ -18,22 +18,20 @@ extern "C" {
 
 #include <stdint.h>
 
-typedef struct sMedianNode
-{
-    int64_t value;                  //sample value
-    struct sMedianNode *nextAge;    //pointer to next oldest value
-    struct sMedianNode *nextValue;  //pointer to next smallest value
-    struct sMedianNode *prevValue;  //pointer to previous smallest value
+typedef struct sMedianNode {
+  int64_t value;                  // sample value
+  struct sMedianNode *nextAge;    // pointer to next oldest value
+  struct sMedianNode *nextValue;  // pointer to next smallest value
+  struct sMedianNode *prevValue;  // pointer to previous smallest value
 } sMedianNode_t;
 
-typedef struct
-{
-    unsigned int numNodes;          //median node buffer length
-    sMedianNode_t *medianBuffer;    //median node buffer
-    sMedianNode_t *ageHead;         //pointer to oldest value
-    sMedianNode_t *valueHead;       //pointer to smallest value
-    sMedianNode_t *medianHead;      //pointer to median value
-    unsigned int bufferCnt;
+typedef struct {
+  unsigned int numNodes;        // median node buffer length
+  sMedianNode_t *medianBuffer;  // median node buffer
+  sMedianNode_t *ageHead;       // pointer to oldest value
+  sMedianNode_t *valueHead;     // pointer to smallest value
+  sMedianNode_t *medianHead;    // pointer to median value
+  unsigned int bufferCnt;
 } sMedianFilter_t;
 
 int MEDIANFILTER_Init(sMedianFilter_t *medianFilter);
@@ -44,4 +42,4 @@ uint8_t MEDIANFILTER_isFull(sMedianFilter_t *medianFilter);
 }
 #endif
 
-#endif	// MEDIANFILTER_H_
+#endif  // MEDIANFILTER_H_

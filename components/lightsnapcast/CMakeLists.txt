@@ -1,3 +1,3 @@
-idf_component_register(SRCS "snapcast.c" 
+idf_component_register(SRCS "snapcast.c" "player.c"
                        INCLUDE_DIRS "include"
-                       REQUIRES libbuffer json)
+                       REQUIRES custom_driver custom_board libbuffer json libmedian audio_board)

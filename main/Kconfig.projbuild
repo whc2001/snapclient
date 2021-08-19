@@ -1,14 +1,43 @@
-# put here your custom config value
-menu "Access Point configuration"
-config ESP_WIFI_SSID
-    string "WiFi SSID"
-    default "myssid"
-    help
-	SSID (network name) for the example to connect to.
+menu "Snapcast Configuration"
 
-config ESP_WIFI_PASSWORD
-    string "WiFi Password"
-    default "mypassword"
-    help
-	WiFi password (WPA or WPA2) for the example to use.
+    config SNAPSERVER_USE_MDNS
+        bool "Use mDNS"
+        default true
+        help
+            Use mDNS to look for the snapserver to connect to on the local network.
+
+    config SNAPSERVER_HOST
+        string "Snapserver host"
+        default "192.168.1.158"
+        depends on !SNAPSERVER_USE_MDNS
+        help
+            Host (ip or name) of snapserver to connect to if mDNS is disabled or the mDNS resolution fails.
+
+    config SNAPSERVER_PORT
+        int "Snapserver port"
+        default 1704
+        depends on !SNAPSERVER_USE_MDNS
+        help
+            Port of the snapserver to connect to.
+            
+    config SNAPCLIENT_BUFF_LEN
+        int "snapcast protocol buffer len"
+        default 4000
+        help
+            Size of the snapclient protocol messages buffer (in bytes).
+
+    config SNAPCLIENT_NAME
+        string "snapclient name"
+        default "esp-snapclient"
+        help
+            Name of the client to register the snapserver.
+endmenu
+
+menu "SNTP Configuration"
+
+    config SNPACLIENT_SNTP_ENABLE
+        bool "Enable SNTP"
+        default true
+        help
+            Enable the setup of RTC time using the SNTP protocol.
 endmenu
