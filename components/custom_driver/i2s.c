@@ -230,7 +230,7 @@ static float i2s_apll_get_fi2s(int bits_per_sample, int sdm0, int sdm1, int sdm2
  * @return     ESP_ERR_INVALID_ARG or ESP_OK
  */
 
-static esp_err_t i2s_apll_calculate_fi2s(int rate, int bits_per_sample, int *sdm0, int *sdm1, int *sdm2, int *odir)
+esp_err_t i2s_apll_calculate_fi2s(int rate, int bits_per_sample, int *sdm0, int *sdm1, int *sdm2, int *odir)
 {
     int _odir, _sdm0, _sdm1, _sdm2;
     float avg;

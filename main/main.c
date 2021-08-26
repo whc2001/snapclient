@@ -6,6 +6,7 @@
 */
 
 #include <string.h>
+#include <stdint.h>
 
 #include "esp_event.h"
 #include "esp_log.h"
@@ -61,6 +62,8 @@ xTaskHandle t_http_get_task;
 
 xQueueHandle prot_queue;
 
+static snapcastSetting_t snapcastSetting;
+
 volatile int64_t clientDacLatency = 0;
 uint32_t buffer_ms = 400;
 uint8_t muteCH[4] = {0};
@@ -83,12 +86,8 @@ int timeval_subtract(struct timeval *result, struct timeval *x,
 /* Logging tag */
 static const char *TAG = "SNAPCAST";
 
-static char buff[SNAPCAST_BUFF_LEN];
-
 extern char mac_address[18];
 extern EventGroupHandle_t s_wifi_event_group;
-
-typedef enum codec_type_e { NONE, PCM, FLAC, OGG, OPUS } codec_type_t;
 
 static QueueHandle_t playerChunkQueueHandle;
 SemaphoreHandle_t timeSyncSemaphoreHandle = NULL;
@@ -118,20 +117,21 @@ static void http_get_task(void *pvParameters) {
   char *start;
   int sock = -1;
   char base_message_serialized[BASE_MESSAGE_SIZE];
+  char time_message_serialized[TIME_MESSAGE_SIZE];
   char *hello_message_serialized = NULL;
   int result, size, id_counter;
   struct timeval now, trx, tdif, ttx;
   time_message_t time_message;
   struct timeval tmpDiffToServer;
   struct timeval lastTimeSync = {0, 0};
-  wire_chunk_message_t wire_chunk_message_last = {{0, 0}, 0, NULL};
+  tv_t wire_chunk_last_timestamp = {0, 0};
   esp_timer_handle_t timeSyncMessageTimer = NULL;
   const esp_timer_create_args_t tSyncArgs = {.callback = &time_sync_msg_cb,
                                              .name = "tSyncMsg"};
   int16_t frameSize = 960;  // 960*2: 20ms, 960*1: 10ms
   int16_t *audio = NULL;
   int16_t pcm_size = 120;
-  uint16_t channels = CHANNELS;
+  uint16_t channels;
   esp_err_t err = 0;
   codec_header_message_t codec_header_message;
   server_settings_message_t server_settings_message;
@@ -141,6 +141,7 @@ static void http_get_task(void *pvParameters) {
   mdns_result_t *r;
   OpusDecoder *opusDecoder = NULL;
   codec_type_t codec = NONE;
+  bool chunkDurationDetected;
 
   // create a timer to send time sync messages every x µs
   esp_timer_create(&tSyncArgs, &timeSyncMessageTimer);
@@ -237,6 +238,7 @@ static void http_get_task(void *pvParameters) {
     }
 
     received_header = false;
+    chunkDurationDetected = false;
 
     // init base message
     base_message.type = SNAPCAST_MESSAGE_HELLO;
@@ -304,11 +306,21 @@ static void http_get_task(void *pvParameters) {
     free(hello_message_serialized);
     hello_message_serialized = NULL;
 
+    // init default setting
+    snapcastSetting.buffer_ms = 0;
+    snapcastSetting.codec = NONE;
+    snapcastSetting.bits = 0;
+    snapcastSetting.channels = 0;
+    snapcastSetting.sampleRate = 0;
+    snapcastSetting.chunkDuration_ms = 0;
+    snapcastSetting.volume = 0;
+    snapcastSetting.muted = false;
+
     for (;;) {
       size = 0;
       result = 0;
       while (size < BASE_MESSAGE_SIZE) {
-        result = recv(sock, &(buff[size]), BASE_MESSAGE_SIZE - size, 0);
+        result = recv(sock, &(base_message_serialized[size]), BASE_MESSAGE_SIZE - size, 0);
         if (result < 0) {
           break;
         }
@@ -334,7 +346,7 @@ static void http_get_task(void *pvParameters) {
           continue;
         }
 
-        result = base_message_deserialize(&base_message, buff, size);
+        result = base_message_deserialize(&base_message, base_message_serialized, size);
         if (result) {
           ESP_LOGW(TAG, "Failed to read base message: %d", result);
           continue;
@@ -348,26 +360,18 @@ static void http_get_task(void *pvParameters) {
         //					base_message.received.sec,
         //					base_message.received.usec );
 
-        start = buff;
+        // TODO: ensure this buffer is freed before task gets deleted
         size = 0;
+        char *typedMsg = malloc(sizeof(char) * base_message.size);
+        if (typedMsg == NULL) {
+        	ESP_LOGE(TAG, "Couldn't get memory for typed message");
 
-        // TODO: dynamically allocate memory for the next read!!!
-        //       generate an error for now if we try to read more than
-        //       SNAPCAST_BUFF_LEN in next lines
-        if (base_message.size > SNAPCAST_BUFF_LEN) {
-          ESP_LOGE(TAG, "base_message.size too big %d", base_message.size);
-
-          return;
+        	return;
         }
+        start = typedMsg;
 
         while (size < base_message.size) {
-          if (size >= SNAPCAST_BUFF_LEN) {
-            ESP_LOGE(TAG, "Index too high");
-
-            return;
-          }
-
-          result = recv(sock, &(buff[size]), base_message.size - size, 0);
+          result = recv(sock, &(start[size]), base_message.size - size, 0);
           if (result < 0) {
             ESP_LOGW(TAG, "Failed to read from server: %d", result);
 
@@ -426,8 +430,28 @@ static void http_get_task(void *pvParameters) {
                        codec_header_message.codec);
 
               codec = OPUS;
+
+              snapcastSetting.codec = codec;
+              snapcastSetting.bits = bits;
+              snapcastSetting.channels = channels;
+              snapcastSetting.sampleRate = rate;
             } else if (strcmp(codec_header_message.codec, "pcm") == 0) {
               codec = PCM;
+
+	            memcpy(&channels, start + 22, sizeof(channels));
+	            uint32_t rate;
+	            memcpy(&rate, start +  24, sizeof(rate));
+	            uint16_t bits;
+	            memcpy(&bits, start + 34, sizeof(bits));
+
+	            ESP_LOGI(TAG, "%s sampleformat: %d:%d:%d",
+	                     codec_header_message.codec, rate, bits, channels);
+
+	              snapcastSetting.codec = codec;
+	              snapcastSetting.bits = bits;
+	              snapcastSetting.channels = channels;
+	              snapcastSetting.sampleRate = rate;
+
             } else {
               codec = NONE;
 
@@ -455,6 +479,10 @@ static void http_get_task(void *pvParameters) {
 
           case SNAPCAST_MESSAGE_WIRE_CHUNK: {
             if (!received_header) {
+                if (typedMsg != NULL) {
+                	free(typedMsg);
+                }
+
               continue;
             }
 
@@ -474,32 +502,6 @@ static void http_get_task(void *pvParameters) {
             // wire_chunk_message.timestamp.sec,
             // wire_chunk_message.timestamp.usec);
 
-            // TODO: detect chunk duration dynamically and allocate buffers
-            // accordingly.
-            struct timeval tv_d1, tv_d2, tv_d3;
-            tv_d1.tv_sec = wire_chunk_message.timestamp.sec;
-            tv_d1.tv_usec = wire_chunk_message.timestamp.usec;
-            tv_d2.tv_sec = wire_chunk_message_last.timestamp.sec;
-            tv_d2.tv_usec = wire_chunk_message_last.timestamp.usec;
-            timersub(&tv_d1, &tv_d2, &tv_d3);
-            wire_chunk_message_last.timestamp = wire_chunk_message.timestamp;
-            // ESP_LOGI(TAG, "chunk duration %ld.%06ld", tv_d3.tv_sec,
-            // tv_d3.tv_usec);
-            if ((tv_d3.tv_sec * 1000000 + tv_d3.tv_usec) >
-                (WIRE_CHUNK_DURATION_MS * 1000)) {
-              ESP_LOGE(TAG,
-                       "wire chnk with size: %d, timestamp %d.%d, duration "
-                       "%ld.%06ld",
-                       wire_chunk_message.size,
-                       wire_chunk_message.timestamp.sec,
-                       wire_chunk_message.timestamp.usec, tv_d3.tv_sec,
-                       tv_d3.tv_usec);
-
-              wire_chunk_message_free(&wire_chunk_message);
-
-              continue;
-            }
-
             // store chunk's timestamp, decoder callback
             // will need it later
             tv_t timestamp;
@@ -512,11 +514,11 @@ static void http_get_task(void *pvParameters) {
                 if (audio == NULL) {
 					#if CONFIG_USE_PSRAM
 					audio = (int16_t *)heap_caps_malloc(
-						frameSize * CHANNELS * (BITS_PER_SAMPLE / 8),
+						frameSize * snapcastSetting.channels * (snapcastSetting.bits / 8),
 						MALLOC_CAP_8BIT | MALLOC_CAP_SPIRAM);  // 960*2: 20ms, 960*1: 10ms
 					#else
 					audio = (int16_t *)malloc(
-									   frameSize * CHANNELS * (BITS_PER_SAMPLE / 8));  // 960*2: 20ms, 960*1: 10ms
+									   frameSize * snapcastSetting.channels * (snapcastSetting.bits / 8));  // 960*2: 20ms, 960*1: 10ms
 					#endif
                 }
 
@@ -536,12 +538,12 @@ static void http_get_task(void *pvParameters) {
                     // 960*2: 20ms, 960*1: 10ms
 					#if CONFIG_USE_PSRAM
                     audio = (int16_t *)heap_caps_realloc(
-                                       audio, pcm_size * CHANNELS * (BITS_PER_SAMPLE / 8), MALLOC_CAP_8BIT | MALLOC_CAP_SPIRAM);	// 2 channels + 2 Byte per sample == int32_t
+                                       audio, pcm_size * snapcastSetting.channels * (snapcastSetting.bits / 8), MALLOC_CAP_8BIT | MALLOC_CAP_SPIRAM);	// 2 channels + 2 Byte per sample == int32_t
 					#else
                     audio = (int16_t *)realloc(
-                    					audio, pcm_size * CHANNELS * (BITS_PER_SAMPLE / 8));
+                    					audio, pcm_size * snapcastSetting.channels * (snapcastSetting.bits / 8));
 //                    audio = (int16_t *)heap_caps_realloc(
-//                    				   (int32_t *)audio, frameSize * CHANNELS * (BITS_PER_SAMPLE / 8), MALLOC_CAP_32BIT);  // 960*2: 20ms, 960*1: 10ms
+//                    				   (int32_t *)audio, frameSize * CHANNELS * (BITS_PER_SAMPLE / 8), MALLOC_CAP_32BIT);
 					#endif
 
 
@@ -562,11 +564,25 @@ static void http_get_task(void *pvParameters) {
                   } else {
                 	  wire_chunk_message_t pcm_chunk_message;
 
-                	  pcm_chunk_message.size = frame_size * CHANNELS * (BITS_PER_SAMPLE / 8);
+                	  pcm_chunk_message.size = frame_size * snapcastSetting.channels * (snapcastSetting.bits / 8);
                 	  pcm_chunk_message.payload = audio;
                 	  pcm_chunk_message.timestamp = timestamp;
 
+					snapcastSetting.chunkDuration_ms = (1000UL * pcm_chunk_message.size) / (uint32_t)(snapcastSetting.channels * (snapcastSetting.bits / 8)) / snapcastSetting.sampleRate;
+					if (player_send_snapcast_setting(snapcastSetting) < 0) {
+					  ESP_LOGE(TAG, "Failed to notify sync task about codec. Did you init player?");
+
+					  return;
+					}
+
+//					if (snapcastSetting.chunkDuration_ms > 30) {
+//						ESP_LOGE(TAG, "We can't get that big chunks on this platform. RAM is a scarce good!");
+//
+//					    return;
+//					}
+
 					#if CONFIG_USE_DSP_PROCESSOR
+					  dsp_setup_flow(500, snapcastSetting.sampleRate, snapcastSetting.chunkDuration_ms);
 					  dsp_processor(pcm_chunk_message.payload,
 									pcm_chunk_message.size, dspFlow);
 					#endif
@@ -580,16 +596,14 @@ static void http_get_task(void *pvParameters) {
 
               case PCM: {
                 wire_chunk_message_t pcm_chunk_message;
-                uint16_t len = (CONFIG_PCM_SAMPLE_RATE * CONFIG_WIRE_CHUNK_DURATION_MS / 1000);
 
                 if (audio == NULL) {
 					#if CONFIG_USE_PSRAM
 					audio = (int16_t *)heap_caps_malloc(
-							len * CHANNELS * (BITS_PER_SAMPLE / 8),
+							pcm_chunk_message.size * sizeof(char),
 							MALLOC_CAP_8BIT | MALLOC_CAP_SPIRAM);  // 960*2: 20ms, 960*1: 10ms
 					#else
-					audio = (int16_t *)malloc(
-									   len * CHANNELS * (BITS_PER_SAMPLE / 8));  // 960*2: 20ms, 960*1: 10ms
+					audio = (int16_t *)malloc(pcm_chunk_message.size * sizeof(char));
 					#endif
                 }
 
@@ -608,7 +622,15 @@ static void http_get_task(void *pvParameters) {
                     memcpy(pcm_chunk_message.payload, start,
                            pcm_chunk_message.size);
 
+                    snapcastSetting.chunkDuration_ms = (1000UL * pcm_chunk_message.size) / (uint32_t)(snapcastSetting.channels * (snapcastSetting.bits / 8)) / snapcastSetting.sampleRate;
+					if (player_send_snapcast_setting(snapcastSetting) < 0) {
+						ESP_LOGE(TAG, "Failed to notify sync task about codec. Did you init player?");
+
+					  return;
+					}
+
 					#if CONFIG_USE_DSP_PROCESSOR
+                      dsp_setup_flow(500, snapcastSetting.sampleRate, snapcastSetting.chunkDuration_ms);
 					  dsp_processor(pcm_chunk_message.payload,
 									pcm_chunk_message.size, dspFlow);
 					#endif
@@ -621,6 +643,8 @@ static void http_get_task(void *pvParameters) {
 
               default: {
                 ESP_LOGE(TAG, "Decoder not supported");
+
+                return;
 
                 break;
               }
@@ -658,13 +682,18 @@ static void http_get_task(void *pvParameters) {
             muteCH[2] = server_settings_message.muted;
             muteCH[3] = server_settings_message.muted;
 
+            snapcastSetting.buffer_ms = server_settings_message.buffer_ms;
+            snapcastSetting.muted = server_settings_message.muted;
+            snapcastSetting.volume = server_settings_message.volume;
+
             // Volume setting using ADF HAL abstraction
             audio_hal_set_mute(board_handle->audio_hal,
                                server_settings_message.muted);
             audio_hal_set_volume(board_handle->audio_hal,
                                  server_settings_message.volume);
 
-            if (player_notify_buffer_ms(buffer_ms) < 0) {
+            //if (player_notify_buffer_ms(buffer_ms) < 0) {
+            if (player_send_snapcast_setting(snapcastSetting) < 0) {
               ESP_LOGE(TAG, "Failed to notify sync task. Did you init player?");
 
               return;
@@ -780,6 +809,10 @@ static void http_get_task(void *pvParameters) {
 
             break;
         }
+
+        if (typedMsg != NULL) {
+			free(typedMsg);
+		}
       }
 
       if (received_header == true) {
@@ -810,7 +843,7 @@ static void http_get_task(void *pvParameters) {
           memset(&time_message, 0, sizeof(time_message));
 
           result =
-              time_message_serialize(&time_message, buff, SNAPCAST_BUFF_LEN);
+              time_message_serialize(&time_message, time_message_serialized, TIME_MESSAGE_SIZE);
           if (result) {
             ESP_LOGI(TAG, "Failed to serialize time message\r\b");
             continue;
@@ -827,7 +860,7 @@ static void http_get_task(void *pvParameters) {
             break;  // stop for(;;) will try to reconnect then
           }
 
-          result = send(sock, buff, TIME_MESSAGE_SIZE, 0);
+          result = send(sock, time_message_serialized, TIME_MESSAGE_SIZE, 0);
           if (result < 0) {
             ESP_LOGW(TAG, "error writing timesync msg to socket: %s",
                      strerror(errno));
@@ -856,8 +889,10 @@ void app_main(void) {
   ESP_ERROR_CHECK(ret);
 
   esp_log_level_set("*", ESP_LOG_INFO);
+//  esp_log_level_set("c_I2S", ESP_LOG_NONE);		//
   esp_log_level_set("HEADPHONE", ESP_LOG_NONE);	// if enabled these cause a timer srv stack overflow
   esp_log_level_set("gpio", ESP_LOG_NONE);		//
+
 
   esp_timer_init();
 
@@ -870,9 +905,9 @@ void app_main(void) {
   i2s_mclk_gpio_select(0, 0);
   // setup_ma120();
 
-#if CONFIG_USE_DSP_PROCESSOR
-  dsp_setup_flow(500, SAMPLE_RATE);
-#endif
+  #if CONFIG_USE_DSP_PROCESSOR
+    dsp_setup_flow(500, 44100, 20);	// init with default value
+  #endif
 
   ESP_LOGI(TAG, "init player");
   playerChunkQueueHandle = init_player();

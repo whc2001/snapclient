@@ -30,8 +30,8 @@
 
 static const char *TAG = "dspProc";
 
-static const uint8_t chunkDurationMs = CONFIG_WIRE_CHUNK_DURATION_MS;
-static const uint32_t sampleRate = CONFIG_PCM_SAMPLE_RATE;
+//static const uint8_t chunkDurationMs = CONFIG_WIRE_CHUNK_DURATION_MS;
+//static const uint32_t sampleRate = CONFIG_PCM_SAMPLE_RATE;
 //static const uint8_t channels = CONFIG_CHANNELS;
 //static const uint8_t bitsPerSample = CONFIG_BITS_PER_SAMPLE;
 
@@ -47,6 +47,9 @@ static float *sbuftmp0 = NULL;//[1024];
 //static uint8_t dsp_audio1[4 * 1024];
 
 extern uint8_t muteCH[4];
+
+static uint32_t currentSamplerate = 0;
+static uint32_t currentChunkDurationMs = 0;
 
 ptype_t bq[8];
 
@@ -265,10 +268,18 @@ int dsp_processor(char *audio, size_t chunk_size, dspFlows_t dspFlow) {
 // ----------------------------------------
 // Fixed 2x2 biquad flow Xover for biAmp systems
 // Interface for cross over frequency and level
-
-void dsp_setup_flow(double freq, uint32_t samplerate) {
+void dsp_setup_flow(double freq, uint32_t samplerate, uint32_t chunkDurationMs) {
   float f = freq / samplerate / 2.0;
-  uint16_t len = (sampleRate * chunkDurationMs / 1000);
+  uint16_t len = (samplerate * chunkDurationMs / 1000);
+
+  if (((currentSamplerate == samplerate) && (currentChunkDurationMs == chunkDurationMs)) ||
+	   (samplerate == 0) || (chunkDurationMs == 0))
+  {
+	  return;
+  }
+
+  currentSamplerate = samplerate;
+  currentChunkDurationMs = chunkDurationMs;
 
   bq[0] = (ptype_t){LPF, f, 0, 0.707, NULL, NULL, {0, 0, 0, 0, 0}, {0, 0}};
   bq[1] = (ptype_t){LPF, f, 0, 0.707, NULL, NULL, {0, 0, 0, 0, 0}, {0, 0}};
@@ -279,11 +290,11 @@ void dsp_setup_flow(double freq, uint32_t samplerate) {
   bq[6] = (ptype_t){LOWSHELF, f, 6, 0.707, NULL, NULL, {0, 0, 0, 0, 0}, {0, 0}};
   bq[7] = (ptype_t){LOWSHELF, f, 6, 0.707, NULL, NULL, {0, 0, 0, 0, 0}, {0, 0}};
 
-  pnode_t *aflow = NULL;
-  aflow = malloc(sizeof(pnode_t));
-  if (aflow == NULL) {
-    printf("Could not create node");
-  }
+//  pnode_t *aflow = NULL;
+//  aflow = malloc(sizeof(pnode_t));
+//  if (aflow == NULL) {
+//    printf("Could not create node");
+//  }
 
   for (uint8_t n = 0; n <= 7; n++) {
     switch (bq[n].filtertype) {
@@ -306,6 +317,18 @@ void dsp_setup_flow(double freq, uint32_t samplerate) {
 //    printf("\n");
   }
 
+  if (sbuffer0 != NULL) {
+	  free(sbuffer0);
+	  sbuffer0 = NULL;
+  }
+  if (sbufout0 != NULL) {
+    free(sbufout0);
+    sbufout0 = NULL;
+  }
+  if (sbuftmp0 != NULL) {
+    free(sbuftmp0);
+    sbuftmp0 = NULL;
+  }
 
   sbuffer0 = (float *)heap_caps_malloc(sizeof(float) * len, MALLOC_CAP_8BIT);
   sbufout0 = (float *)heap_caps_malloc(sizeof(float) * len, MALLOC_CAP_8BIT);

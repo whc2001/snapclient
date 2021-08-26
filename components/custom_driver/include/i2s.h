@@ -203,6 +203,42 @@ esp_err_t i2s_custom_write_expand(i2s_port_t i2s_num, const void *src, size_t si
 esp_err_t i2s_custom_read(i2s_port_t i2s_num, void *dest, size_t size, size_t *bytes_read, TickType_t ticks_to_wait);
 
 /**
+ * @brief     APLL calculate function, was described by following:
+ *            APLL Output frequency is given by the formula:
+ *
+ *            apll_freq = xtal_freq * (4 + sdm2 + sdm1/256 + sdm0/65536)/((o_div + 2) * 2)
+ *            apll_freq = fout / ((o_div + 2) * 2)
+ *
+ *            The dividend in this expression should be in the range of 240 - 600 MHz.
+ *            In rev. 0 of ESP32, sdm0 and sdm1 are unused and always set to 0.
+ *            * sdm0  frequency adjustment parameter, 0..255
+ *            * sdm1  frequency adjustment parameter, 0..255
+ *            * sdm2  frequency adjustment parameter, 0..63
+ *            * o_div  frequency divider, 0..31
+ *
+ *            The most accurate way to find the sdm0..2 and odir parameters is to loop through them all,
+ *            then apply the above formula, finding the closest frequency to the desired one.
+ *            But 256*256*64*32 = 134.217.728 loops are too slow with ESP32
+ *            1. We will choose the parameters with the highest level of change,
+ *               With 350MHz<fout<500MHz, we limit the sdm2 from 4 to 9,
+ *               Take average frequency close to the desired frequency, and select sdm2
+ *            2. Next, we look for sequences of less influential and more detailed parameters,
+ *               also by taking the average of the largest and smallest frequencies closer to the desired frequency.
+ *            3. And finally, loop through all the most detailed of the parameters, finding the best desired frequency
+ *
+ * @param[in]  rate                  The I2S Frequency (MCLK)
+ * @param[in]  bits_per_sample       The bits per sample
+ * @param[out]      sdm0             The sdm 0
+ * @param[out]      sdm1             The sdm 1
+ * @param[out]      sdm2             The sdm 2
+ * @param[out]      odir             The odir
+ *
+ * @return     ESP_ERR_INVALID_ARG or ESP_OK
+ */
+
+esp_err_t i2s_apll_calculate_fi2s(int rate, int bits_per_sample, int *sdm0, int *sdm1, int *sdm2, int *odir);
+
+/**
  * @brief Set sample rate used for I2S RX and TX.
  *
  * The bit clock rate is determined by the sample rate and i2s_config_t configuration parameters (number of channels, bits_per_sample).
