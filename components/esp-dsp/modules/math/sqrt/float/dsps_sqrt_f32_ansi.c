@@ -13,37 +13,43 @@
 // limitations under the License.
 
 #include "dsps_sqrt.h"
+#include "esp_err.h"
 #include <math.h>
 
-
-inline float dsps_sqrtf_f32_ansi(float f)
+inline float
+dsps_sqrtf_f32_ansi (float f)
 {
-    const int result = 0x1fbb4000 + (*(int*)&f >> 1);
-    return *(float*)&result;   
+  const int result = 0x1fbb4000 + (*(int *)&f >> 1);
+  return *(float *)&result;
 }
 
-esp_err_t dsps_sqrt_f32_ansi(const float *input, float *output, int len)
+esp_err_t
+dsps_sqrt_f32_ansi (const float *input, float *output, int len)
 {
-    if (NULL == input) return ESP_ERR_DSP_PARAM_OUTOFRANGE;
-    if (NULL == output) return ESP_ERR_DSP_PARAM_OUTOFRANGE;
+  if (NULL == input)
+    return ESP_ERR_DSP_PARAM_OUTOFRANGE;
+  if (NULL == output)
+    return ESP_ERR_DSP_PARAM_OUTOFRANGE;
 
-    for (int i = 0 ; i < len ; i++) {
-        output[i] = dsps_sqrtf_f32_ansi(input[i]);
+  for (int i = 0; i < len; i++)
+    {
+      output[i] = dsps_sqrtf_f32_ansi (input[i]);
     }
-    return ESP_OK;
+  return ESP_OK;
 }
 
-float dsps_inverted_sqrtf_f32_ansi(float data )
-{	
-	const float x2 = data * 0.5F;
-	const float threehalfs = 1.5F;
+float
+dsps_inverted_sqrtf_f32_ansi (float data)
+{
+  const float x2 = data * 0.5F;
+  const float threehalfs = 1.5F;
 
-	union {
-		float f;
-		uint32_t i;
-	} conv = {data}; // member 'f' set to value of 'data'.
-	conv.i  = 0x5f3759df - ( conv.i >> 1 );
-	conv.f  *= ( threehalfs - ( x2 * conv.f * conv.f ) );
-	return conv.f;
+  union
+  {
+    float f;
+    uint32_t i;
+  } conv = { data }; // member 'f' set to value of 'data'.
+  conv.i = 0x5f3759df - (conv.i >> 1);
+  conv.f *= (threehalfs - (x2 * conv.f * conv.f));
+  return conv.f;
 }
-
