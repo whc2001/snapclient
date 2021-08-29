@@ -61,8 +61,6 @@ xTaskHandle t_http_get_task;
 
 xQueueHandle prot_queue;
 
-static snapcastSetting_t snapcastSetting;
-
 // static int64_t clientDacLatency = 0;
 // uint32_t buffer_ms = 400;
 // uint8_t muteCH[4] = {0};
@@ -84,7 +82,7 @@ static const char *TAG = "SNAPCAST";
 
 extern char mac_address[18];
 
-static QueueHandle_t playerChunkQueueHandle;
+// static QueueHandle_t playerChunkQueueHandle = NULL;
 SemaphoreHandle_t timeSyncSemaphoreHandle = NULL;
 
 #if CONFIG_USE_DSP_PROCESSOR
@@ -97,13 +95,17 @@ uint8_t dspFlow = dspfStereo; // dspfBiamp; // dspfStereo; // dspfBassBoost;
 void
 time_sync_msg_cb (void *args)
 {
-  static BaseType_t xHigherPriorityTaskWoken;
+  BaseType_t xHigherPriorityTaskWoken;
 
   // causes kernel panic, which shouldn't happen though?
   // Isn't it called from timer task instead of ISR?
   // xSemaphoreGive(timeSyncSemaphoreHandle);
 
   xSemaphoreGiveFromISR (timeSyncSemaphoreHandle, &xHigherPriorityTaskWoken);
+  if (xHigherPriorityTaskWoken)
+    {
+      portYIELD_FROM_ISR ();
+    }
 }
 
 /**
@@ -139,6 +141,7 @@ http_get_task (void *pvParameters)
   mdns_result_t *r;
   OpusDecoder *opusDecoder = NULL;
   codec_type_t codec = NONE;
+  snapcastSetting_t scSet;
 
   // create a timer to send time sync messages every x µs
   esp_timer_create (&tSyncArgs, &timeSyncMessageTimer);
@@ -320,14 +323,14 @@ http_get_task (void *pvParameters)
       hello_message_serialized = NULL;
 
       // init default setting
-      snapcastSetting.buffer_ms = 0;
-      snapcastSetting.codec = NONE;
-      snapcastSetting.bits = 0;
-      snapcastSetting.channels = 0;
-      snapcastSetting.sampleRate = 0;
-      snapcastSetting.chunkDuration_ms = 0;
-      snapcastSetting.volume = 0;
-      snapcastSetting.muted = false;
+      scSet.buffer_ms = 0;
+      scSet.codec = NONE;
+      scSet.bits = 0;
+      scSet.ch = 0;
+      scSet.sr = 0;
+      scSet.chkDur_ms = 0;
+      scSet.volume = 0;
+      scSet.muted = true;
 
       for (;;)
         {
@@ -471,10 +474,10 @@ http_get_task (void *pvParameters)
 
                       codec = OPUS;
 
-                      snapcastSetting.codec = codec;
-                      snapcastSetting.bits = bits;
-                      snapcastSetting.channels = channels;
-                      snapcastSetting.sampleRate = rate;
+                      scSet.codec = codec;
+                      scSet.bits = bits;
+                      scSet.ch = channels;
+                      scSet.sr = rate;
                     }
                   else if (strcmp (codec_header_message.codec, "pcm") == 0)
                     {
@@ -490,10 +493,10 @@ http_get_task (void *pvParameters)
                                 codec_header_message.codec, rate, bits,
                                 channels);
 
-                      snapcastSetting.codec = codec;
-                      snapcastSetting.bits = bits;
-                      snapcastSetting.channels = channels;
-                      snapcastSetting.sampleRate = rate;
+                      scSet.codec = codec;
+                      scSet.bits = bits;
+                      scSet.ch = channels;
+                      scSet.sr = rate;
                     }
                   else
                     {
@@ -566,15 +569,14 @@ http_get_task (void *pvParameters)
                             {
 #if CONFIG_USE_PSRAM
                               audio = (int16_t *)heap_caps_malloc (
-                                  frameSize * snapcastSetting.channels
-                                      * (snapcastSetting.bits / 8),
+                                  frameSize * scSet.ch * (scSet.bits / 8),
                                   MALLOC_CAP_8BIT
                                       | MALLOC_CAP_SPIRAM); // 960*2: 20ms,
                                                             // 960*1: 10ms
 #else
                               audio = (int16_t *)malloc (
-                                  frameSize * snapcastSetting.channels
-                                  * (snapcastSetting.bits
+                                  frameSize * scSet.ch
+                                  * (scSet.bits
                                      / 8)); // 960*2: 20ms, 960*1: 10ms
 #endif
                             }
@@ -601,8 +603,7 @@ http_get_task (void *pvParameters)
 #if CONFIG_USE_PSRAM
                                   audio = (int16_t *)heap_caps_realloc (
                                       audio,
-                                      pcm_size * snapcastSetting.channels
-                                          * (snapcastSetting.bits / 8),
+                                      pcm_size * scSet.ch * (scSet.bits / 8),
                                       MALLOC_CAP_8BIT
                                           | MALLOC_CAP_SPIRAM); // 2 channels +
                                                                 // 2 Byte per
@@ -610,9 +611,8 @@ http_get_task (void *pvParameters)
                                                                 // int32_t
 #else
                                   audio = (int16_t *)realloc (
-                                      audio, pcm_size
-                                                 * snapcastSetting.channels
-                                                 * (snapcastSetting.bits / 8));
+                                      audio,
+                                      pcm_size * scSet.ch * (scSet.bits / 8));
                                   //                    audio = (int16_t
                                   //                    *)heap_caps_realloc(
                                   //                    				   (int32_t
@@ -644,21 +644,19 @@ http_get_task (void *pvParameters)
                                 {
                                   wire_chunk_message_t pcm_chunk_message;
 
-                                  pcm_chunk_message.size
-                                      = frame_size * snapcastSetting.channels
-                                        * (snapcastSetting.bits / 8);
+                                  pcm_chunk_message.size = frame_size
+                                                           * scSet.ch
+                                                           * (scSet.bits / 8);
                                   pcm_chunk_message.payload = (char *)audio;
                                   pcm_chunk_message.timestamp = timestamp;
 
-                                  snapcastSetting.chunkDuration_ms
+                                  scSet.chkDur_ms
                                       = (1000UL * pcm_chunk_message.size)
-                                        / (uint32_t) (
-                                              snapcastSetting.channels
-                                              * (snapcastSetting.bits / 8))
-                                        / snapcastSetting.sampleRate;
-                                  if (player_send_snapcast_setting (
-                                          snapcastSetting)
-                                      < 0)
+                                        / (uint32_t) (scSet.ch
+                                                      * (scSet.bits / 8))
+                                        / scSet.sr;
+                                  if (player_send_snapcast_setting (&scSet)
+                                      != pdPASS)
                                     {
                                       ESP_LOGE (
                                           TAG,
@@ -679,9 +677,8 @@ http_get_task (void *pvParameters)
                                     //					}
 
 #if CONFIG_USE_DSP_PROCESSOR
-                                  dsp_setup_flow (
-                                      500, snapcastSetting.sampleRate,
-                                      snapcastSetting.chunkDuration_ms);
+                                  dsp_setup_flow (500, scSet.sr,
+                                                  scSet.chkDur_ms);
                                   dsp_processor (pcm_chunk_message.payload,
                                                  pcm_chunk_message.size,
                                                  dspFlow);
@@ -730,14 +727,12 @@ http_get_task (void *pvParameters)
                               memcpy (pcm_chunk_message.payload, start,
                                       pcm_chunk_message.size);
 
-                              snapcastSetting.chunkDuration_ms
+                              scSet.chkDur_ms
                                   = (1000UL * pcm_chunk_message.size)
-                                    / (uint32_t) (snapcastSetting.channels
-                                                  * (snapcastSetting.bits / 8))
-                                    / snapcastSetting.sampleRate;
-                              if (player_send_snapcast_setting (
-                                      snapcastSetting)
-                                  < 0)
+                                    / (uint32_t) (scSet.ch * (scSet.bits / 8))
+                                    / scSet.sr;
+                              if (player_send_snapcast_setting (&scSet)
+                                  != pdPASS)
                                 {
                                   ESP_LOGE (TAG,
                                             "Failed to notify sync task about "
@@ -747,9 +742,7 @@ http_get_task (void *pvParameters)
                                 }
 
 #if CONFIG_USE_DSP_PROCESSOR
-                              dsp_setup_flow (
-                                  500, snapcastSetting.sampleRate,
-                                  snapcastSetting.chunkDuration_ms);
+                              dsp_setup_flow (500, scSet.sr, scSet.chkDur_ms);
                               dsp_processor (pcm_chunk_message.payload,
                                              pcm_chunk_message.size, dspFlow);
 #endif
@@ -801,25 +794,23 @@ http_get_task (void *pvParameters)
                             server_settings_message.volume);
 
                   // Volume setting using ADF HAL abstraction
-                  if (snapcastSetting.muted != server_settings_message.muted)
+                  if (scSet.muted != server_settings_message.muted)
                     {
                       audio_hal_set_mute (board_handle->audio_hal,
                                           server_settings_message.muted);
                     }
-                  if (snapcastSetting.volume != server_settings_message.volume)
+                  if (scSet.volume != server_settings_message.volume)
                     {
-                      audio_hal_set_mute (board_handle->audio_hal,
-                                          server_settings_message.volume);
+                      audio_hal_set_volume (board_handle->audio_hal,
+                                            server_settings_message.volume);
                     }
 
-                  snapcastSetting.clientDacLatency_ms
-                      = server_settings_message.latency;
-                  snapcastSetting.buffer_ms
-                      = server_settings_message.buffer_ms;
-                  snapcastSetting.muted = server_settings_message.muted;
-                  snapcastSetting.volume = server_settings_message.volume;
+                  scSet.cDacLat_ms = server_settings_message.latency;
+                  scSet.buffer_ms = server_settings_message.buffer_ms;
+                  scSet.muted = server_settings_message.muted;
+                  scSet.volume = server_settings_message.volume;
 
-                  if (player_send_snapcast_setting (snapcastSetting) < 0)
+                  if (player_send_snapcast_setting (&scSet) != pdPASS)
                     {
                       ESP_LOGE (
                           TAG,
@@ -1053,7 +1044,7 @@ app_main (void)
     }
   ESP_ERROR_CHECK (ret);
 
-  esp_log_level_set ("*", ESP_LOG_INFO);
+  esp_log_level_set ("*", ESP_LOG_WARN);
   //  esp_log_level_set("c_I2S", ESP_LOG_NONE);		//
   esp_log_level_set (
       "HEADPHONE",
@@ -1076,11 +1067,7 @@ app_main (void)
 #endif
 
   ESP_LOGI (TAG, "init player");
-  playerChunkQueueHandle = init_player ();
-  if (playerChunkQueueHandle == NULL)
-    {
-      return;
-    }
+  init_player ();
 
   // Enable and setup WIFI in station mode and connect to Access point setup in
   // menu config or set up provisioning mode settable in menuconfig
