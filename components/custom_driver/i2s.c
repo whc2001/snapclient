@@ -12,6 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+// Modifications copyright (C) 2021 CarlosDerSeher
+
 #include <esp_types.h>
 #include <math.h>
 #include <stdbool.h>

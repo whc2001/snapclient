@@ -38,7 +38,7 @@ typedef enum codec_type_e
 
 typedef struct snapcastSetting_s
 {
-  uint32_t buffer_ms;
+  uint32_t buf_ms;
   uint32_t chkDur_ms;
   int32_t cDacLat_ms;
 
@@ -49,6 +49,9 @@ typedef struct snapcastSetting_s
 
   bool muted;
   uint32_t volume;
+
+  char *pcmBuf;
+  uint32_t pcmBufSize;
 } snapcastSetting_t;
 
 int init_player (void);

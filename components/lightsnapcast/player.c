@@ -10,6 +10,8 @@
 #include "freertos/semphr.h"
 #include "freertos/task.h"
 
+//#include "lwip/stats.h"
+
 #include "esp_log.h"
 
 #include "soc/rtc.h"
@@ -23,8 +25,8 @@
 
 #include "i2s.h" // use custom i2s driver instead of IDF version
 
-#define SYNC_TASK_PRIORITY configMAX_PRIORITIES - 1 // 20
-#define SYNC_TASK_CORE_ID 1                         // tskNO_AFFINITY
+#define SYNC_TASK_PRIORITY (configMAX_PRIORITIES - 1)
+#define SYNC_TASK_CORE_ID 1 // tskNO_AFFINITY
 
 static const char *TAG = "PLAYER";
 
@@ -53,7 +55,7 @@ static sMedianNode_t shortMedianBuffer[SHORT_BUFFER_LEN];
 
 static int8_t currentDir = 0; //!< current apll direction, see apll_adjust()
 
-static QueueHandle_t pcmChunkQueueHandle = NULL;
+static QueueHandle_t pcmChkQHdl = NULL;
 
 //#define PCM_CHNK_QUEUE_LENGTH  50 // TODO: one chunk is hardcoded to 20ms,
 // change it to be dynamically adjustable. static StaticQueue_t pcmChunkQueue;
@@ -64,7 +66,7 @@ static TaskHandle_t syncTaskHandle = NULL;
 
 static QueueHandle_t snapcastSettingQueueHandle = NULL;
 
-static size_t chunkInBytes;
+static size_t chkInBytes;
 
 static uint32_t i2sDmaBufCnt;
 static uint32_t i2sDmaBufMaxLen;
@@ -94,10 +96,10 @@ player_setup_i2s (i2s_port_t i2sNum, snapcastSetting_t *setting)
   const int __dmaBufMaxLen = 1024;
   int m_scale = 8, fi2s_clk;
 
-  chunkInBytes
+  chkInBytes
       = (setting->chkDur_ms * setting->sr * setting->ch * (setting->bits / 8))
         / 1000;
-  chunkInFrames = chunkInBytes / (setting->ch * (setting->bits / 8));
+  chunkInFrames = chkInBytes / (setting->ch * (setting->bits / 8));
 
   __dmaBufCnt = 1;
   __dmaBufLen = chunkInFrames;
@@ -243,7 +245,7 @@ deinit_player (void)
       snapcastSettingsMux = NULL;
     }
 
-  ret = destroy_pcm_queue (&pcmChunkQueueHandle);
+  ret = destroy_pcm_queue (&pcmChkQHdl);
 
   if (latencyBufSemaphoreHandle == NULL)
     {
@@ -270,7 +272,7 @@ init_player (void)
 {
   int ret = 0;
 
-  currentSnapcastSetting.buffer_ms = 1000;
+  currentSnapcastSetting.buf_ms = 1000;
   currentSnapcastSetting.chkDur_ms = 20;
   currentSnapcastSetting.codec = NONE;
   currentSnapcastSetting.sr = 44100;
@@ -390,9 +392,8 @@ player_send_snapcast_setting (snapcastSetting_t *setting)
 
   ret = player_get_snapcast_settings (&curSet);
 
-  if ((curSet.bits != setting->bits)
-      || (curSet.buffer_ms != setting->buffer_ms) || (curSet.ch != setting->ch)
-      || (curSet.chkDur_ms != setting->chkDur_ms)
+  if ((curSet.bits != setting->bits) || (curSet.buf_ms != setting->buf_ms)
+      || (curSet.ch != setting->ch) || (curSet.chkDur_ms != setting->chkDur_ms)
       || (curSet.codec != setting->codec) || (curSet.muted != setting->muted)
       || (curSet.sr != setting->sr) || (curSet.volume != setting->volume))
     {
@@ -401,7 +402,7 @@ player_send_snapcast_setting (snapcastSetting_t *setting)
       if (((curSet.muted != setting->muted)
            || (curSet.volume != setting->volume))
           && ((curSet.bits == setting->bits)
-              && (curSet.buffer_ms == setting->buffer_ms)
+              && (curSet.buf_ms == setting->buf_ms)
               && (curSet.ch == setting->ch)
               && (curSet.chkDur_ms == setting->chkDur_ms)
               && (curSet.codec == setting->codec)
@@ -794,7 +795,7 @@ insert_pcm_chunk (wire_chunk_message_t *decodedWireChunk)
       return -1;
     }
 
-  if (pcmChunkQueueHandle == NULL)
+  if (pcmChkQHdl == NULL)
     {
       ESP_LOGW (TAG, "pcm chunk queue not created");
 
@@ -856,10 +857,10 @@ insert_pcm_chunk (wire_chunk_message_t *decodedWireChunk)
   if (freeMem >= decodedWireChunk->size)
     {
       largestFreeBlock = heap_caps_get_largest_free_block (MALLOC_CAP_32BIT);
-      //		ESP_LOGI(
-      //				TAG,
-      //				"32b f %d b %d", freeMem,
-      // largestFreeBlock);
+      //	  ESP_LOGI(
+      //			  TAG,
+      //			  "32b f %d b %d", freeMem,
+      //			  largestFreeBlock);
       if (largestFreeBlock >= decodedWireChunk->size)
         {
           pcmChunk->fragment->payload = (char *)heap_caps_malloc (
@@ -991,7 +992,7 @@ insert_pcm_chunk (wire_chunk_message_t *decodedWireChunk)
           //			ESP_LOGI(
           //					TAG,
           //					"8b f %d b %d", freeMem,
-          // largestFreeBlock);
+          //          		largestFreeBlock);
           if (largestFreeBlock >= decodedWireChunk->size)
             {
               pcmChunk->fragment->payload = (char *)heap_caps_malloc (
@@ -1116,12 +1117,11 @@ insert_pcm_chunk (wire_chunk_message_t *decodedWireChunk)
 
   if (ret == 0)
     {
-      if (xQueueSendToBack (pcmChunkQueueHandle, &pcmChunk,
-                            pdMS_TO_TICKS (1000))
+      if (xQueueSendToBack (pcmChkQHdl, &pcmChunk, pdMS_TO_TICKS (1000))
           != pdTRUE)
         {
           ESP_LOGW (TAG, "send: pcmChunkQueue full, messages waiting %d",
-                    uxQueueMessagesWaiting (pcmChunkQueueHandle));
+                    uxQueueMessagesWaiting (pcmChkQHdl));
 
           free_pcm_chunk (pcmChunk);
         }
@@ -1145,7 +1145,7 @@ player_task (void *pvParameters)
   int64_t serverNow = 0;
   int64_t age;
   BaseType_t ret;
-  int64_t chunkDuration_us;
+  int64_t chkDur_us;
   char *p_payload = NULL;
   size_t size = 0;
   uint32_t notifiedValue;
@@ -1156,7 +1156,7 @@ player_task (void *pvParameters)
   int initialSync = 0;
   int64_t avg = 0;
   int dir = 0;
-  int64_t buffer_us_local = 0;
+  int64_t buf_us = 0;
   pcm_chunk_fragment_t *fragment = NULL;
   size_t written;
   bool gotSnapserverConfig = false;
@@ -1164,6 +1164,8 @@ player_task (void *pvParameters)
   uint64_t start, end;
 
   ESP_LOGI (TAG, "started sync task");
+
+  //  stats_init();
 
   // create message queue to inform task of changed settings
   snapcastSettingQueueHandle = xQueueCreate (1, sizeof (uint8_t));
@@ -1189,10 +1191,10 @@ player_task (void *pvParameters)
         {
           player_get_snapcast_settings (&scSet);
 
-          buffer_us_local = (int64_t) (scSet.buffer_ms) * 1000LL;
+          buf_us = (int64_t) (scSet.buf_ms) * 1000LL;
 
-          chunkDuration_us = (int64_t) (scSet.chkDur_ms) * 1000LL;
-          chunkInBytes
+          chkDur_us = (int64_t) (scSet.chkDur_ms) * 1000LL;
+          chkInBytes
               = (scSet.chkDur_ms * scSet.sr * scSet.ch * (scSet.bits / 8))
                 / 1000;
           clientDacLatency_us = (int64_t)scSet.cDacLat_ms * 1000LL;
@@ -1209,25 +1211,26 @@ player_task (void *pvParameters)
                   return;
                 }
 
-              currentDir
-                  = 1; // force adjust_apll to set correct playback speed
+              // force adjust_apll() to set playback speed
+              currentDir = 1;
               adjust_apll (0);
 
               i2s_custom_set_clk (I2S_NUM_0, scSet.sr, scSet.bits, scSet.ch);
               initialSync = 0;
             }
 
-          if ((scSet.buffer_ms > 0) && (scSet.chkDur_ms > 0))
+          if ((scSet.buf_ms > 0) && (scSet.chkDur_ms > 0))
             {
               // create snapcast receive buffer
-              if (pcmChunkQueueHandle != NULL)
+              if (pcmChkQHdl != NULL)
                 {
-                  destroy_pcm_queue (&pcmChunkQueueHandle);
+                  destroy_pcm_queue (&pcmChkQHdl);
                 }
 
-              int entries = ((float)scSet.buffer_ms / (float)scSet.chkDur_ms)
-                            + 0.5; // round up
-              pcmChunkQueueHandle
+              // round up
+              int entries
+                  = ((float)scSet.buf_ms / (float)scSet.chkDur_ms) + 0.5;
+              pcmChkQHdl
                   = xQueueCreate (entries, sizeof (pcm_chunk_message_t *));
 
               ESP_LOGI (TAG, "created new queue with %d", entries);
@@ -1236,7 +1239,7 @@ player_task (void *pvParameters)
           ESP_LOGI (TAG,
                     "snapserver config changed, buffer %dms, chunk %dms, "
                     "sample rate %d, ch %d, bits %d mute %d",
-                    scSet.buffer_ms, scSet.chkDur_ms, scSet.sr, scSet.ch,
+                    scSet.buf_ms, scSet.chkDur_ms, scSet.sr, scSet.ch,
                     scSet.bits, scSet.muted);
 
           gotSnapserverConfig = true;
@@ -1252,10 +1255,9 @@ player_task (void *pvParameters)
 
       if (chnk == NULL)
         {
-          if (pcmChunkQueueHandle != NULL)
+          if (pcmChkQHdl != NULL)
             {
-              ret = xQueueReceive (pcmChunkQueueHandle, &chnk,
-                                   pdMS_TO_TICKS (2000));
+              ret = xQueueReceive (pcmChkQHdl, &chnk, pdMS_TO_TICKS (2000));
             }
           else
             {
@@ -1287,7 +1289,7 @@ player_task (void *pvParameters)
               age = serverNow
                     - ((int64_t)chnk->timestamp.sec * 1000000LL
                        + (int64_t)chnk->timestamp.usec)
-                    - (int64_t)buffer_us_local + (int64_t)clientDacLatency_us;
+                    - (int64_t)buf_us + (int64_t)clientDacLatency_us;
             }
           else
             {
@@ -1383,6 +1385,11 @@ player_task (void *pvParameters)
                         }
                     }
 
+                  //                TCP_STATS_DISPLAY();
+                  //				  IP_STATS_DISPLAY();
+                  //				  MEM_STATS_DISPLAY();
+                  //				  LINK_STATS_DISPLAY();
+
                   // Wait to be notified of a timer interrupt.
                   xTaskNotifyWait (
                       pdFALSE,        // Don't clear bits on entry.
@@ -1477,7 +1484,7 @@ player_task (void *pvParameters)
 
           const uint8_t enableControlLoop = 1;
           const int64_t age_expect
-              = -chunkDuration_us
+              = -chkDur_us
                 * 1; // this value is highly coupled with I2S DMA buffer
                      // size. DMA buffer has a size of 1 chunk (e.g. 20ms)
                      // so next chunk we get from queue will be -20ms
@@ -1603,12 +1610,12 @@ player_task (void *pvParameters)
 
           get_diff_to_server (&t);
 
-          if (pcmChunkQueueHandle != NULL)
+          if (pcmChkQHdl != NULL)
             {
               ESP_LOGE (TAG,
                         "Couldn't get PCM chunk, recv: messages waiting %d, "
                         "latency %lldus",
-                        uxQueueMessagesWaiting (pcmChunkQueueHandle), t);
+                        uxQueueMessagesWaiting (pcmChkQHdl), t);
             }
 
           dir = 0;
