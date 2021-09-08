@@ -3,29 +3,30 @@
 ### Synchronous Multiroom audio streaming client for [Snapcast](https://github.com/badaix/snapcast) ported to ESP32
 
 ## Feature list
-- Opus and PCM decoding currently supported
-- Wifi setup from menuconfig
+- Opus, FLAC and PCM decoding currently supported
+- Wifi setup from menuconfig or through espressif Android App "SoftAP Prov"
 - Auto connect to snapcast server on network
-- Buffers up to 150 ms on Wroom modules
+- Buffers up to 800ms on Wroom modules
 - Buffers more then enough on Wrover modules
-- Multiroom sync delay controlled from Snapcast server 400ms - 2000ms
+- Multiroom sync delay controlled from Snapcast server (user has to ensure not to set this too high on the server)
 
 ## Description
-I have continued the work from @badaix and @bridadan towards a ESP32 Snapcast
-client. Currently it support basic features like multirum sync, network
-controlled volume and mute. For now it only support Opus and PCM 16bit/48Khz
-audio streams and the synchornization part is still being worked on.
+I have continued the work from @badaix, @bridadan and @jorgenkraghjakobsen towards a ESP32 Snapcast
+client. Currently it support basic features like multiroom sync, network
+controlled volume and mute. For now it only support Opus, FLAC and PCM 16bit
+audio streams with sample rates up to 48Khz maybe more, I didn't test.
 
 Please check out the task list and feel free to fill in.
 
-I have used the Infineon MA12070P Multi level Class D combined coded/amp due to
-its superior power effecienty on a high supply rail. It allows battery power
-system with good playback time at normal listen level and still have the power
-to start the party.
+I dropped the usage of ADF completely but copied stripped down, needed components to this project.
+This was necessary because ADF was using flac in closed source precompiled library
+which made it impossible to get good results for multiroom syncing. IDF's I2S driver was also copied
+to project's components and adapted. Originally it wasn't possible to pre load DMA buffers with audio
+samples and therefore no precise sync could be achieved.
 
 ### Codebase
 
-The codebase is split into components and build on vanilla ESP-IDF. I still
+The codebase is split into components and build on ESP-IDF v4.3. I still
 have some refactoring on the todo list as the concept has started to settle and
 allow for new features can be added in a structured manner. In the code you
 will find parts that are only partly related features and still not on the task
@@ -33,16 +34,27 @@ list.
 
 Components
  - MerusAudio : Low level communication interface MA12070P
+ - flac : flac audio cider/decoder full submodule
  - opus : Opus audio coder/decoder full submodule
  - rtprx : Alternative RTP audio client UDP low latency also opus based
- - lightsnapcast : Port of @bridadan scapcast packages decode library
+ - lightsnapcast : o Port of @bridadan scapcast packages decode library
+                   o player module, which is responsible for sync and low level I2S control
+ - libmedian: Median Filter implementation. Many thanks to @accabog https://github.com/accabog/MedianFilter
  - libbuffer : Generic buffer abstraction
  - esp-dsp : Submodule to the ESP-ADF done by David Douard
- - dsp_processor : Audio Processor and I2S low level interface including sync
-   buffer
+ - dsp_processor : Audio Processor
+ - audio-board : taken from ADF, stripped down to strictly necessary parts for usage with Lyrat v4.3
+ - audio-hal : taken from ADF, stripped down to strictly necessary parts for usage with Lyrat v4.3
+ - audio-sal : taken from ADF, stripped down to strictly necessary parts for usage with Lyrat v4.3
+ - esp-peripherals : taken from ADF, stripped down to strictly necessary parts for usage with Lyrat v4.3
+ - custom-driver : modified I2S driver from IDF v4.3 which supports preloading DMA buffers with valid data
 
 The snapclient functionanlity are implemented in a task included in main - but
 will be refactored to a component in near future.
+
+
+
+Todo: following does not apply to this fork
 
 Sync concept has been changed start 2021 on this implementation and differ a
 bit from the way original snap clints handle this.
