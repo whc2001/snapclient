@@ -37,8 +37,9 @@ Components
  - flac : flac audio cider/decoder full submodule
  - opus : Opus audio coder/decoder full submodule
  - rtprx : Alternative RTP audio client UDP low latency also opus based
- - lightsnapcast : o Port of @bridadan scapcast packages decode library
-                   o player module, which is responsible for sync and low level I2S control
+ - lightsnapcast : 
+   * Port of @bridadan scapcast packages decode library
+   * player module, which is responsible for sync and low level I2S control
  - libmedian: Median Filter implementation. Many thanks to @accabog https://github.com/accabog/MedianFilter
  - libbuffer : Generic buffer abstraction
  - esp-dsp : Submodule to the ESP-ADF done by David Douard
@@ -52,32 +53,31 @@ Components
 The snapclient functionanlity are implemented in a task included in main - but
 will be refactored to a component in near future.
 
+I did my own syncing implementation which is different than @jorgenkraghjakobsen's
+approach in the original repository, at least regarding syncing itself. I tried to
+replicate the behaivior of how badaix did it for his original snapclients.
 
+The snapclient frontend handles communication with the server and after
+successfull hello hand shake it dispatches packages from the server.
+Normally these packages contain messages in the following order:
 
-Todo: following does not apply to this fork
-
-Sync concept has been changed start 2021 on this implementation and differ a
-bit from the way original snap clints handle this.
-
-The snapclient frontend handles communiction with the server and after
-successfully hello hand shake it dispatches packages from the server.
-
+ - SERVER_SETTING : volume, mute state, playback delay etc
  - CODEC_HEADER : Setup client audio codec (FLAC, OPUS, OGG or PCM) bitrate, n
-   channels and bits pr sample
- - WIRE_CHUNK : Coded audio data
- - SERVER_SETTING : Channel volume, mute state, playback delay etc
- - TIME : Ping pong time keeping packages to keep track of time dif from server
+   channels and bits per sample
+ - WIRE_CHUNK : Coded audio data, also I calculate chunk duration here after 
+   decoding is done using received CODEC_HEADER parameters
+ - TIME : Ping pong time keeping packages to keep track of time diff from server
    to client
 
-Each wire_chunk of audio data comes with a timestamp and client has agreed play
-that sample playback-delay after the timestamp. One way to handle that is to
-pass on audio data to a buffer with a length that compensate for for
-playback-delay, network jitter and DAC to speaker.
+Each WIRE_CHUNK of audio data comes with a timestamp in server time and clients 
+can use information from TIME and SERVER_SETTING messages to determine when playback 
+has to be started. We handle this using a buffer with a length that compensate for for
+playback-delay, network jitter and DAC to speaker (determined through SERVER_SETTING).
 
 In this implementation I have separated the sync task to a backend on the other
-end of a large ring buffer. Now the front end just need to pass on the audio
-data to the ring buffer with the server timestamp and chunk size. The backen
-read timestamps and waits until the audio chunk has the correct playback-delay
+end of a freeRTOS queue. Now the front end just needs to pass on the decoded audio
+data to the queue with the server timestamp and chunk size. The backend reads 
+timestamps and waits until the audio chunk has the correct playback-delay
 to be written to the DAC amplifer speaker pipeline. When the backend pipeline
 is in sync, any offset get rolled in by micro tuning the APLL on the ESP. No
 sample manipulation needed.
@@ -102,15 +102,15 @@ sample manipulation needed.
 
 Clone this repo:
 
-    git clone https://github.com/jorgenkraghjakobsen/snapclint
+    git clone https://github.com/CarlosDerSeher/snapclient
 
-Update third party code (opus and esp-dsp):
+Update third party code (opus, flac and esp-dsp):
 
     git submodule update --init
 
 Configure to match your setup
   - Wifi network name and password
-  - Audio coded setup
+  - Audio codec/board setup
 
     idf.py menuconfig
 
@@ -159,16 +159,16 @@ Then on every `git commit`, a few sanity/formatting checks will be performed.
 
 ## Task list
 - [ok] Fix to alinge with above
- * kconfig
+  [ ] put kconfig to better locations in tree
  * add codec description
-- [ ] Integrate ESP wifi provision
+- [ok] Integrate ESP wifi provision
 - [ok] Find and connect to Avahi broadcasted Snapcast server name
 - [ ] Add a client command interface layer like volume/mute control
-- [ ] Build a ESP-ADF branch
+- [ ] DAC latency setting from android app
+- [ ] add missing codec's (ogg, etc.)
 
 ## Minor task
-- [ ] Propergate mute/unute from server message to DSP backend mute control.
   - [ ] soft mute - play sample in buffer with decreasing volume
-  - [ok] hard mute - pass on zero at the DSP hackend
-- [ ] Startup: do not start parsing on samples to codec before sample ring buffer hits requested buffer size.
+  - [ok] hard mute - using ADF's HAL
+  - [ok] Startup: do not start parsing on samples to codec before sample ring buffer hits requested buffer size.
   - [ok] Start from empty buffer
