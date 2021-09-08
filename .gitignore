@@ -1,3 +1,4 @@
 build
 libopus
-components/opus
+components/opus/opus
+components/flac/flac
