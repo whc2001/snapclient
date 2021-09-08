@@ -166,6 +166,7 @@ Then on every `git commit`, a few sanity/formatting checks will be performed.
 - [ ] Add a client command interface layer like volume/mute control
 - [ ] DAC latency setting from android app
 - [ ] add missing codec's (ogg, etc.)
+- [ ] test esp-dsp functionality after ADF drop
 
 ## Minor task
   - [ ] soft mute - play sample in buffer with decreasing volume
