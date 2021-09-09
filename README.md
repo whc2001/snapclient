@@ -33,22 +33,28 @@ will find parts that are only partly related features and still not on the task
 list.
 
 Components
- - MerusAudio : Low level communication interface MA12070P
- - flac : flac audio cider/decoder full submodule
- - opus : Opus audio coder/decoder full submodule
- - rtprx : Alternative RTP audio client UDP low latency also opus based
- - lightsnapcast : 
-   * Port of @bridadan scapcast packages decode library
-   * player module, which is responsible for sync and low level I2S control
- - libmedian: Median Filter implementation. Many thanks to @accabog https://github.com/accabog/MedianFilter
- - libbuffer : Generic buffer abstraction
- - esp-dsp : Submodule to the ESP-ADF done by David Douard
- - dsp_processor : Audio Processor
  - audio-board : taken from ADF, stripped down to strictly necessary parts for usage with Lyrat v4.3
  - audio-hal : taken from ADF, stripped down to strictly necessary parts for usage with Lyrat v4.3
  - audio-sal : taken from ADF, stripped down to strictly necessary parts for usage with Lyrat v4.3
- - esp-peripherals : taken from ADF, stripped down to strictly necessary parts for usage with Lyrat v4.3
+ - custom_board : 
  - custom-driver : modified I2S driver from IDF v4.3 which supports preloading DMA buffers with valid data
+ - dsp_processor : Audio Processor, low pass filters, effects, etc.
+ - esp-dsp : Submodule to the ESP-ADF done by David Douard
+ - esp-peripherals : taken from ADF, stripped down to strictly necessary parts for usage with Lyrat v4.3
+ - flac : flac audio cider/decoder full submodule
+ - libmedian: Median Filter implementation. Many thanks to @accabog https://github.com/accabog/MedianFilter
+ - libbuffer : Generic buffer abstraction 
+ - lightsnapcast : 
+   * snapcast module, port of @bridadan scapcast packages decode library
+   * player module, which is responsible for sync and low level I2S control
+ - net_functions : 
+ - opus : Opus audio coder/decoder full submodule
+ - ota_server : 
+ - protocol : 
+ - rtprx : Alternative RTP audio client UDP low latency also opus based
+ - websocket : 
+ - websocket_if : 
+ - wifi_interface : wifi provisoning and init code for wifi module and AP connection
 
 The snapclient functionanlity are implemented in a task included in main - but
 will be refactored to a component in near future.
@@ -159,17 +165,20 @@ Then on every `git commit`, a few sanity/formatting checks will be performed.
 
 ## Task list
 - [ok] Fix to alinge with above
-  [ ] put kconfig to better locations in tree
+- [ ] put kconfig to better locations in tree
  * add codec description
 - [ok] Integrate ESP wifi provision
 - [ok] Find and connect to Avahi broadcasted Snapcast server name
 - [ ] Add a client command interface layer like volume/mute control
-- [ ] DAC latency setting from android app
 - [ ] add missing codec's (ogg, etc.)
 - [ ] test esp-dsp functionality after ADF drop
+- [ ] Check compatibility with different HW than Lyrat v4.3
+- [ ] rework dsp_processor and test. At the moment only dspfStereo and dspfBassBoost will work. Also ensure/test we got enough RAM on WROVER modules
 
 ## Minor task
   - [ ] soft mute - play sample in buffer with decreasing volume
   - [ok] hard mute - using ADF's HAL
   - [ok] Startup: do not start parsing on samples to codec before sample ring buffer hits requested buffer size.
   - [ok] Start from empty buffer
+  - [ ] fill in missing component descriptions in Readme.md
+  - [ ] DAC latency setting from android app
