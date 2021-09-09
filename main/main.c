@@ -65,6 +65,7 @@ static void error_callback (const FLAC__StreamDecoder *decoder,
 
 //#include "ma120.h"
 
+static FLAC__StreamDecoder *flacDecoder = NULL;
 static QueueHandle_t flacReadQHdl = NULL;
 static QueueHandle_t flacWriteQHdl = NULL;
 
@@ -76,9 +77,12 @@ const char *VERSION_STRING = "0.0.2";
 #define OTA_TASK_PRIORITY 6
 #define OTA_TASK_CORE_ID tskNO_AFFINITY
 
-xTaskHandle t_ota_task;
-xTaskHandle t_http_get_task;
-xTaskHandle t_flac_decoder_task;
+#define FLAC_TASK_PRIORITY HTTP_TASK_PRIORITY + 1
+#define FLAC_TASK_CORE_ID 1 // tskNO_AFFINITY
+
+xTaskHandle t_ota_task = NULL;
+xTaskHandle t_http_get_task = NULL;
+xTaskHandle t_flac_decoder_task = NULL;
 
 struct timeval tdif, tavg;
 audio_board_handle_t board_handle = NULL;
@@ -271,7 +275,6 @@ static void
 flac_decoder_task (void *pvParameters)
 {
   FLAC__bool ok = true;
-  FLAC__StreamDecoder *flacDecoder = NULL;
   FLAC__StreamDecoderInitStatus init_status;
   snapcastSetting_t *scSet = (snapcastSetting_t *)pvParameters;
 
@@ -381,11 +384,6 @@ http_get_task (void *pvParameters)
   mdns_init ();
 #endif
 
-  // TODO: only create this task, if we need flac
-  // 	  also add an ogg variant
-  xTaskCreatePinnedToCore (&flac_decoder_task, "flac_decoder_task", 4 * 4096,
-                           &scSet, 6, &t_flac_decoder_task, 1);
-
   while (1)
     {
       if (reset_latency_buffer () < 0)
@@ -404,6 +402,31 @@ http_get_task (void *pvParameters)
         {
           opus_decoder_destroy (opusDecoder);
           opusDecoder = NULL;
+        }
+
+      if (t_flac_decoder_task != NULL)
+        {
+          vTaskDelete (t_flac_decoder_task);
+          t_flac_decoder_task = NULL;
+        }
+
+      if (flacDecoder != NULL)
+        {
+          FLAC__stream_decoder_finish (flacDecoder);
+          FLAC__stream_decoder_delete (flacDecoder);
+          flacDecoder = NULL;
+        }
+
+      if (flacWriteQHdl != NULL)
+        {
+          vQueueDelete (flacWriteQHdl);
+          flacWriteQHdl = NULL;
+        }
+
+      if (flacReadQHdl != NULL)
+        {
+          vQueueDelete (flacReadQHdl);
+          flacReadQHdl = NULL;
         }
 
 #if SNAPCAST_SERVER_USE_MDNS
@@ -675,6 +698,37 @@ http_get_task (void *pvParameters)
                   size = codec_header_message.size;
                   start = codec_header_message.payload;
 
+                  if (opusDecoder != NULL)
+                    {
+                      opus_decoder_destroy (opusDecoder);
+                      opusDecoder = NULL;
+                    }
+
+                  if (t_flac_decoder_task != NULL)
+                    {
+                      vTaskDelete (t_flac_decoder_task);
+                      t_flac_decoder_task = NULL;
+                    }
+
+                  if (flacDecoder != NULL)
+                    {
+                      FLAC__stream_decoder_finish (flacDecoder);
+                      FLAC__stream_decoder_delete (flacDecoder);
+                      flacDecoder = NULL;
+                    }
+
+                  if (flacWriteQHdl != NULL)
+                    {
+                      vQueueDelete (flacWriteQHdl);
+                      flacWriteQHdl = NULL;
+                    }
+
+                  if (flacReadQHdl != NULL)
+                    {
+                      vQueueDelete (flacReadQHdl);
+                      flacReadQHdl = NULL;
+                    }
+
                   // ESP_LOGI(TAG, "Received codec header message with size
                   // %d", codec_header_message.size);
 
@@ -702,11 +756,6 @@ http_get_task (void *pvParameters)
                         }
 
                       int error = 0;
-                      if (opusDecoder != NULL)
-                        {
-                          opus_decoder_destroy (opusDecoder);
-                          opusDecoder = NULL;
-                        }
                       opusDecoder
                           = opus_decoder_create (rate, channels, &error);
                       if (error != 0)
@@ -732,6 +781,14 @@ http_get_task (void *pvParameters)
                     {
                       codec = FLAC;
 
+                      if (t_flac_decoder_task == NULL)
+                        {
+                          xTaskCreatePinnedToCore (
+                              &flac_decoder_task, "flac_decoder_task",
+                              4 * 4096, &scSet, FLAC_TASK_PRIORITY,
+                              &t_flac_decoder_task, FLAC_TASK_CORE_ID);
+                        }
+
                       // check if audio buffer was previously allocated by some
                       // other codec this would happen if codec is changed
                       // while client was running
@@ -750,6 +807,12 @@ http_get_task (void *pvParameters)
                       flacData.bytes = codec_header_message.size;
                       flacData.inData = codec_header_message.payload;
                       pFlacData = &flacData;
+
+                      // wait for task creation done
+                      while (flacReadQHdl == NULL)
+                        {
+                          vTaskDelay (10);
+                        }
 
                       // send data to flac decoder
                       xQueueSend (flacReadQHdl, &pFlacData, portMAX_DELAY);
@@ -908,7 +971,7 @@ http_get_task (void *pvParameters)
                                   audio = (int16_t *)realloc (
                                       audio,
                                       pcm_size * scSet.ch * (scSet.bits / 8));
-                                  //                    audio = (int16_t
+                                  //                    audio = (int16_t,
                                   //                    *)heap_caps_realloc(
                                   //                    				   (int32_t
                                   //                    *)audio, frameSize *
@@ -982,11 +1045,17 @@ http_get_task (void *pvParameters)
                           flacData.inData = wire_chunk_message.payload;
                           pFlacData = &flacData;
 
+                          //                          startTime =
+                          //                          esp_timer_get_time ();
                           // send data to flac decoder
                           xQueueSend (flacReadQHdl, &pFlacData, portMAX_DELAY);
                           // and wait until it is done
                           xQueueReceive (flacWriteQHdl, &pFlacData,
                                          portMAX_DELAY);
+                          //                          endTime =
+                          //                          esp_timer_get_time ();
+                          //				          ESP_LOGW(TAG,
+                          //"%lld", endTime - startTime);
 
                           wire_chunk_message_t pcm_chunk_message;
 
@@ -1267,7 +1336,7 @@ http_get_task (void *pvParameters)
                         // Do a initial time sync with the server at boot
                         // we need to fill diffBuff fast so we get a good
                         // estimate of latency
-                        timeout = 50000;
+                        timeout = 100000;
                       }
 
                     esp_timer_start_once (timeSyncMessageTimer, timeout);

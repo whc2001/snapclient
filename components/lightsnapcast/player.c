@@ -395,7 +395,8 @@ player_send_snapcast_setting (snapcastSetting_t *setting)
   if ((curSet.bits != setting->bits) || (curSet.buf_ms != setting->buf_ms)
       || (curSet.ch != setting->ch) || (curSet.chkDur_ms != setting->chkDur_ms)
       || (curSet.codec != setting->codec) || (curSet.muted != setting->muted)
-      || (curSet.sr != setting->sr) || (curSet.volume != setting->volume))
+      || (curSet.sr != setting->sr) || (curSet.volume != setting->volume)
+      || (curSet.cDacLat_ms != setting->cDacLat_ms))
     {
       // check if it is only volume / mute related setting, which is handled by
       // http_get_task()
@@ -405,8 +406,8 @@ player_send_snapcast_setting (snapcastSetting_t *setting)
               && (curSet.buf_ms == setting->buf_ms)
               && (curSet.ch == setting->ch)
               && (curSet.chkDur_ms == setting->chkDur_ms)
-              && (curSet.codec == setting->codec)
-              && (curSet.sr == setting->sr)))
+              && (curSet.codec == setting->codec) && (curSet.sr == setting->sr)
+              && (curSet.cDacLat_ms == setting->cDacLat_ms)))
         {
           // no notify needed, only set changed parameters
           ret = player_set_snapcast_settings (setting);
@@ -1238,9 +1239,9 @@ player_task (void *pvParameters)
 
           ESP_LOGI (TAG,
                     "snapserver config changed, buffer %dms, chunk %dms, "
-                    "sample rate %d, ch %d, bits %d mute %d",
+                    "sample rate %d, ch %d, bits %d mute %d latency %d",
                     scSet.buf_ms, scSet.chkDur_ms, scSet.sr, scSet.ch,
-                    scSet.bits, scSet.muted);
+                    scSet.bits, scSet.muted, scSet.cDacLat_ms);
 
           gotSnapserverConfig = true;
         }

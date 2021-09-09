@@ -36,24 +36,24 @@ Components
  - audio-board : taken from ADF, stripped down to strictly necessary parts for usage with Lyrat v4.3
  - audio-hal : taken from ADF, stripped down to strictly necessary parts for usage with Lyrat v4.3
  - audio-sal : taken from ADF, stripped down to strictly necessary parts for usage with Lyrat v4.3
- - custom_board : 
+ - custom_board :
  - custom-driver : modified I2S driver from IDF v4.3 which supports preloading DMA buffers with valid data
  - dsp_processor : Audio Processor, low pass filters, effects, etc.
  - esp-dsp : Submodule to the ESP-ADF done by David Douard
  - esp-peripherals : taken from ADF, stripped down to strictly necessary parts for usage with Lyrat v4.3
  - flac : flac audio cider/decoder full submodule
  - libmedian: Median Filter implementation. Many thanks to @accabog https://github.com/accabog/MedianFilter
- - libbuffer : Generic buffer abstraction 
- - lightsnapcast : 
+ - libbuffer : Generic buffer abstraction
+ - lightsnapcast :
    * snapcast module, port of @bridadan scapcast packages decode library
    * player module, which is responsible for sync and low level I2S control
- - net_functions : 
+ - net_functions :
  - opus : Opus audio coder/decoder full submodule
- - ota_server : 
- - protocol : 
+ - ota_server :
+ - protocol :
  - rtprx : Alternative RTP audio client UDP low latency also opus based
- - websocket : 
- - websocket_if : 
+ - websocket :
+ - websocket_if :
  - wifi_interface : wifi provisoning and init code for wifi module and AP connection
 
 The snapclient functionanlity are implemented in a task included in main - but
@@ -70,19 +70,19 @@ Normally these packages contain messages in the following order:
  - SERVER_SETTING : volume, mute state, playback delay etc
  - CODEC_HEADER : Setup client audio codec (FLAC, OPUS, OGG or PCM) bitrate, n
    channels and bits per sample
- - WIRE_CHUNK : Coded audio data, also I calculate chunk duration here after 
+ - WIRE_CHUNK : Coded audio data, also I calculate chunk duration here after
    decoding is done using received CODEC_HEADER parameters
  - TIME : Ping pong time keeping packages to keep track of time diff from server
    to client
 
-Each WIRE_CHUNK of audio data comes with a timestamp in server time and clients 
-can use information from TIME and SERVER_SETTING messages to determine when playback 
+Each WIRE_CHUNK of audio data comes with a timestamp in server time and clients
+can use information from TIME and SERVER_SETTING messages to determine when playback
 has to be started. We handle this using a buffer with a length that compensate for for
 playback-delay, network jitter and DAC to speaker (determined through SERVER_SETTING).
 
 In this implementation I have separated the sync task to a backend on the other
 end of a freeRTOS queue. Now the front end just needs to pass on the decoded audio
-data to the queue with the server timestamp and chunk size. The backend reads 
+data to the queue with the server timestamp and chunk size. The backend reads
 timestamps and waits until the audio chunk has the correct playback-delay
 to be written to the DAC amplifer speaker pipeline. When the backend pipeline
 is in sync, any offset get rolled in by micro tuning the APLL on the ESP. No
@@ -181,4 +181,4 @@ Then on every `git commit`, a few sanity/formatting checks will be performed.
   - [ok] Startup: do not start parsing on samples to codec before sample ring buffer hits requested buffer size.
   - [ok] Start from empty buffer
   - [ ] fill in missing component descriptions in Readme.md
-  - [ ] DAC latency setting from android app
+  - [ok] DAC latency setting from android app
