@@ -9,9 +9,9 @@
 
 #define I2S_PORT I2S_NUM_0
 
-#define LATENCY_MEDIAN_FILTER_LEN 49 // 99
+#define LATENCY_MEDIAN_FILTER_LEN 29 // 99
 
-#define SHORT_BUFFER_LEN 29
+#define SHORT_BUFFER_LEN 9
 
 typedef struct pcm_chunk_fragment pcm_chunk_fragment_t;
 struct pcm_chunk_fragment
@@ -29,7 +29,7 @@ typedef struct pcm_chunk_message
 
 typedef enum codec_type_e
 {
-  NONE,
+  NONE = 0,
   PCM,
   FLAC,
   OGG,
@@ -57,7 +57,11 @@ typedef struct snapcastSetting_s
 int init_player (void);
 int deinit_player (void);
 
-int8_t insert_pcm_chunk (wire_chunk_message_t *decodedWireChunk);
+int8_t allocate_pcm_chunk_memory (pcm_chunk_message_t **pcmChunk,
+                                  size_t bytes);
+int8_t insert_pcm_chunk (wire_chunk_message_t *pcmChunk);
+
+// int8_t insert_pcm_chunk (wire_chunk_message_t *decodedWireChunk);
 int8_t free_pcm_chunk (pcm_chunk_message_t *pcmChunk);
 
 int8_t player_latency_insert (int64_t newValue);

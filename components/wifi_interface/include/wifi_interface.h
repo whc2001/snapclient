@@ -1,6 +1,7 @@
 #ifndef _WIFI_INTERFACE_H_
 #define _WIFI_INTERFACE_H_
 
+#include "esp_netif_types.h"
 #include "freertos/event_groups.h"
 
 // use wifi provisioning
@@ -23,6 +24,7 @@
 #define WIFI_CONNECTED_BIT BIT0
 #define WIFI_FAIL_BIT BIT1
 
-void wifi_init(void);
+void wifi_init (void);
+esp_netif_t *get_current_netif (void);
 
 #endif /* _WIFI_INTERFACE_H_ */

@@ -22,6 +22,7 @@
 #include "board.h"
 #include "es8388.h"
 #include "esp_netif.h"
+#include "lwip/api.h"
 #include "lwip/dns.h"
 #include "lwip/err.h"
 #include "lwip/netdb.h"
@@ -29,6 +30,8 @@
 #include "lwip/sys.h"
 #include "mdns.h"
 #include "net_functions.h"
+
+#include "wifi_logger.h"
 
 // Web socket server
 #include "websocket_if.h"
@@ -68,6 +71,8 @@ static void error_callback (const FLAC__StreamDecoder *decoder,
 static FLAC__StreamDecoder *flacDecoder = NULL;
 static QueueHandle_t flacReadQHdl = NULL;
 static QueueHandle_t flacWriteQHdl = NULL;
+SemaphoreHandle_t flacReadSemaphore = NULL;
+SemaphoreHandle_t flacWriteSemaphore = NULL;
 
 const char *VERSION_STRING = "0.0.2";
 
@@ -75,9 +80,9 @@ const char *VERSION_STRING = "0.0.2";
 #define HTTP_TASK_CORE_ID 1 // tskNO_AFFINITY
 
 #define OTA_TASK_PRIORITY 6
-#define OTA_TASK_CORE_ID tskNO_AFFINITY
+#define OTA_TASK_CORE_ID 1 // tskNO_AFFINITY
 
-#define FLAC_TASK_PRIORITY HTTP_TASK_PRIORITY + 1
+#define FLAC_TASK_PRIORITY HTTP_TASK_PRIORITY
 #define FLAC_TASK_CORE_ID 1 // tskNO_AFFINITY
 
 xTaskHandle t_ota_task = NULL;
@@ -85,7 +90,7 @@ xTaskHandle t_http_get_task = NULL;
 xTaskHandle t_flac_decoder_task = NULL;
 
 struct timeval tdif, tavg;
-audio_board_handle_t board_handle = NULL;
+static audio_board_handle_t board_handle = NULL;
 
 /* snapast parameters; configurable in menuconfig */
 #define SNAPCAST_SERVER_USE_MDNS CONFIG_SNAPSERVER_USE_MDNS
@@ -111,7 +116,7 @@ uint8_t dspFlow = dspfStereo; // dspfBiamp; // dspfStereo; // dspfBassBoost;
 typedef struct flacData_s
 {
   char *inData;
-  char *outData;
+  pcm_chunk_message_t *outData;
   uint32_t bytes;
 } flacData_t;
 
@@ -145,7 +150,8 @@ read_callback (const FLAC__StreamDecoder *decoder, FLAC__byte buffer[],
 
   xQueueReceive (flacReadQHdl, &flacData, portMAX_DELAY);
 
-  //	ESP_LOGI(TAG, "in flac read cb %p", flacData);
+  //  	ESP_LOGI(TAG, "in flac read cb %d %p", flacData->bytes,
+  //  flacData->inData);
 
   if (flacData->bytes <= 0)
     {
@@ -161,36 +167,43 @@ read_callback (const FLAC__StreamDecoder *decoder, FLAC__byte buffer[],
     {
       memcpy (buffer, flacData->inData, flacData->bytes);
       *bytes = flacData->bytes;
-      //		ESP_LOGW(TAG, "read all flac inData %d", *bytes);
+      //      ESP_LOGW(TAG, "read all flac inData %d", *bytes);
     }
   else
     {
       memcpy (buffer, flacData->inData, *bytes);
-      //		ESP_LOGW(TAG, "dind't read all flac inData %d",
-      //*bytes);
+      ESP_LOGW (TAG, "dind't read all flac inData %d", *bytes);
       flacData->inData += *bytes;
       flacData->bytes -= *bytes;
     }
 
-  xQueueSend (flacReadQHdl, &flacData, portMAX_DELAY);
+  // xQueueSend (flacReadQHdl, &flacData, portMAX_DELAY);
+
+  xSemaphoreGive (flacReadSemaphore);
 
   return FLAC__STREAM_DECODER_READ_STATUS_CONTINUE;
 }
+
+static flacData_t flacOutData;
 
 static FLAC__StreamDecoderWriteStatus
 write_callback (const FLAC__StreamDecoder *decoder, const FLAC__Frame *frame,
                 const FLAC__int32 *const buffer[], void *client_data)
 {
   size_t i;
-  flacData_t *flacData;
+  flacData_t *flacData = &flacOutData;
   snapcastSetting_t *scSet = (snapcastSetting_t *)client_data;
+  int ret = 0;
+  uint32_t tmpData;
 
   (void)decoder;
 
-  xQueueReceive (flacReadQHdl, &flacData, portMAX_DELAY);
+  xSemaphoreTake (flacWriteSemaphore, portMAX_DELAY);
 
-  //	ESP_LOGI(TAG, "in flac write cb %d %p", frame->header.blocksize,
-  // flacData);
+  // xQueueReceive (flacReadQHdl, &flacData, portMAX_DELAY);
+
+  //  ESP_LOGI(TAG, "in flac write cb %d %p", frame->header.blocksize,
+  //  flacData);
 
   if (frame->header.channels != scSet->ch)
     {
@@ -219,20 +232,49 @@ write_callback (const FLAC__StreamDecoder *decoder, const FLAC__Frame *frame,
       return FLAC__STREAM_DECODER_WRITE_STATUS_ABORT;
     }
 
-  flacData->bytes = frame->header.blocksize * scSet->ch * (scSet->bits / 8);
-  ;
-  flacData->outData = (char *)realloc (flacData->outData, flacData->bytes);
+  flacData->bytes = frame->header.blocksize * frame->header.channels
+                    * (frame->header.bits_per_sample / 8);
 
-  for (i = 0; i < frame->header.blocksize; i++)
+  // flacData->outData = (char *)realloc (flacData->outData, flacData->bytes);
+  // flacData->outData = (char *)malloc (flacData->bytes);
+  ret = allocate_pcm_chunk_memory (&(flacData->outData), flacData->bytes);
+
+  // ESP_LOGI (TAG, "mem %p %p %d", flacData->outData,
+  // flacData->outData->fragment->payload, flacData->bytes);
+
+  if (ret == 0)
     {
-      // write little endian
-      flacData->outData[4 * i] = (uint8_t)buffer[0][i];
-      flacData->outData[4 * i + 1] = (uint8_t) (buffer[0][i] >> 8);
-      flacData->outData[4 * i + 2] = (uint8_t)buffer[1][i];
-      flacData->outData[4 * i + 3] = (uint8_t) (buffer[1][i] >> 8);
+      for (i = 0; i < frame->header.blocksize; i++)
+        {
+          // write little endian
+          //		flacData->outData-[4 * i] = (uint8_t)buffer[0][i];
+          //		flacData->outData[4 * i + 1] = (uint8_t) (buffer[0][i]
+          //>> 8); 		flacData->outData[4 * i + 2] =
+          // (uint8_t)buffer[1][i]; 		flacData->outData[4 * i + 3] =
+          // (uint8_t)
+          //(buffer[1][i] >> 8);
+
+          // TODO: for now fragmented payload is not supported and the whole
+          // chunk is expected to be in the first fragment
+          tmpData = ((uint32_t) ((buffer[1][i] >> 8) & 0xFF) << 24)
+                    | ((uint32_t) ((buffer[1][i] >> 0) & 0xFF) << 16)
+                    | ((uint32_t) ((buffer[0][i] >> 8) & 0xFF) << 8)
+                    | ((uint32_t) ((buffer[0][i] >> 0) & 0xFF) << 0);
+
+          uint32_t *test = &(flacData->outData->fragment->payload[4 * i]);
+          *test = tmpData;
+          // memcpy((uint32_t *)&(flacData->outData->fragment->payload[4 * i]),
+          // &tmpData, sizeof(tmpData));
+        }
+    }
+  else
+    {
+      flacData->outData = NULL;
     }
 
   xQueueSend (flacWriteQHdl, &flacData, portMAX_DELAY);
+
+  // xSemaphoreGive(flacWriteSemaphore);
 
   return FLAC__STREAM_DECODER_WRITE_STATUS_CONTINUE;
 }
@@ -241,12 +283,12 @@ void
 metadata_callback (const FLAC__StreamDecoder *decoder,
                    const FLAC__StreamMetadata *metadata, void *client_data)
 {
-  flacData_t *flacData;
+  flacData_t *flacData = &flacOutData;
   snapcastSetting_t *scSet = (snapcastSetting_t *)client_data;
 
   (void)decoder;
 
-  xQueueReceive (flacReadQHdl, &flacData, portMAX_DELAY);
+  // xQueueReceive (flacReadQHdl, &flacData, portMAX_DELAY);
 
   if (metadata->type == FLAC__METADATA_TYPE_STREAMINFO)
     {
@@ -259,6 +301,8 @@ metadata_callback (const FLAC__StreamDecoder *decoder,
 
       xQueueSend (flacWriteQHdl, &flacData, portMAX_DELAY);
     }
+
+  //  xSemaphoreGive(flacReadSemaphore);
 }
 
 void
@@ -335,6 +379,13 @@ flac_decoder_task (void *pvParameters)
     }
 }
 
+static char base_message_serialized[BASE_MESSAGE_SIZE];
+static char time_message_serialized[TIME_MESSAGE_SIZE];
+static const esp_timer_create_args_t tSyncArgs
+    = { .callback = &time_sync_msg_cb, .name = "tSyncMsg" };
+
+struct netconn *lwipNetconn;
+
 /**
  *
  */
@@ -344,19 +395,18 @@ http_get_task (void *pvParameters)
   struct sockaddr_in servaddr;
   char *start;
   int sock = -1;
-  base_message_t base_message;
+  base_message_t base_message_rx;
+  base_message_t base_message_tx;
   hello_message_t hello_message;
-  char base_message_serialized[BASE_MESSAGE_SIZE];
-  char time_message_serialized[TIME_MESSAGE_SIZE];
+  wire_chunk_message_t wire_chnk = { { 0, 0 }, 0, NULL };
   char *hello_message_serialized = NULL;
   int result, size, id_counter;
   struct timeval now, trx, tdif, ttx;
-  time_message_t time_message;
+  time_message_t time_message_rx = { { 0, 0 } };
+  time_message_t time_message_tx = { { 0, 0 } };
   struct timeval tmpDiffToServer;
   struct timeval lastTimeSync = { 0, 0 };
   esp_timer_handle_t timeSyncMessageTimer = NULL;
-  const esp_timer_create_args_t tSyncArgs
-      = { .callback = &time_sync_msg_cb, .name = "tSyncMsg" };
   int16_t frameSize = 960; // 960*2: 20ms, 960*1: 10ms
   int16_t *audio = NULL;
   int16_t pcm_size = 120;
@@ -371,6 +421,16 @@ http_get_task (void *pvParameters)
   snapcastSetting_t scSet;
   flacData_t flacData = { NULL, NULL, 0 };
   flacData_t *pFlacData;
+  char *typedMsg = NULL;
+  uint32_t lastTypedMsgSize = 0;
+  //  struct netconn *lwipNetconn = NULL;
+  ip_addr_t local_ip;
+  ip_addr_t remote_ip;
+  uint16_t remotePort = 0;
+  int rc1 = ERR_OK, rc2 = ERR_OK;
+  struct netbuf *firstNetBuf = NULL;
+  struct netbuf *newNetBuf = NULL;
+  uint16_t len;
 
   // create a timer to send time sync messages every x µs
   esp_timer_create (&tSyncArgs, &timeSyncMessageTimer);
@@ -460,6 +520,2109 @@ http_get_task (void *pvParameters)
       servaddr.sin_family = AF_INET;
       servaddr.sin_addr.s_addr = r->addr->addr.u_addr.ip4.addr;
       servaddr.sin_port = htons (r->port);
+
+      ip_addr_copy (remote_ip, r->addr->addr);
+      remotePort = r->port;
+
+      mdns_query_results_free (r);
+#else
+      // configure a failsafe snapserver according to CONFIG values
+      servaddr.sin_family = AF_INET;
+      inet_pton (AF_INET, SNAPCAST_SERVER_HOST, &(servaddr.sin_addr.s_addr));
+      servaddr.sin_port = htons (SNAPCAST_SERVER_PORT);
+
+      inet_pton (AF_INET, SNAPCAST_SERVER_HOST, &(remote_ip.u_addr.ip4.addr));
+      remotePort = SNAPCAST_SERVER_PORT;
+#endif
+
+      if (lwipNetconn != NULL)
+        {
+          netconn_delete (lwipNetconn);
+          lwipNetconn = NULL;
+        }
+
+      lwipNetconn = netconn_new (NETCONN_TCP);
+      if (lwipNetconn == NULL)
+        {
+          ESP_LOGE (TAG, "can't create netconn");
+
+          continue;
+        }
+
+      //      local_ip.u_addr.ip4.addr = get_current_ip4().addr;
+      ////      local_ip.u_addr.ip4.addr = ipaddr_addr("192.168.1.21");
+      ////      ESP_LOGI (TAG, "netconn bind to %s", inet_ntop (AF_INET,
+      ///&(local_ip.u_addr.ip4.addr), serverAddr, sizeof (serverAddr)));
+      rc1 = netconn_bind (lwipNetconn, IPADDR_ANY, 0);
+      if (rc1 != ERR_OK)
+        {
+          ESP_LOGE (TAG, "can't bind local IP");
+        }
+
+      //  	  ipaddr_aton("192.168.1.54", &remote_ip);
+      rc2 = netconn_connect (lwipNetconn, &remote_ip, remotePort);
+      if (rc2 != ERR_OK)
+        {
+          ESP_LOGE (TAG, "can't connect to remote %s:%d, err %d",
+                    inet_ntop (AF_INET, &(remote_ip.u_addr.ip4.addr),
+                               serverAddr, sizeof (serverAddr)),
+                    remotePort, rc2);
+        }
+      if (rc1 != ERR_OK || rc2 != ERR_OK)
+        {
+          netconn_close (lwipNetconn);
+          netconn_delete (lwipNetconn);
+          lwipNetconn = NULL;
+
+          continue;
+        }
+
+      ESP_LOGI (TAG, "netconn connected");
+
+      result = gettimeofday (&now, NULL);
+      if (result)
+        {
+          ESP_LOGE (TAG, "Failed to gettimeofday\r\n");
+          return;
+        }
+
+      received_header = false;
+
+      // init base message
+      base_message_rx.type = SNAPCAST_MESSAGE_HELLO;
+      base_message_rx.id = 0x0000;
+      base_message_rx.refersTo = 0x0000;
+      base_message_rx.sent.sec = now.tv_sec;
+      base_message_rx.sent.usec = now.tv_usec;
+      base_message_rx.received.sec = 0;
+      base_message_rx.received.usec = 0;
+      base_message_rx.size = 0x00000000;
+
+      // init hello message
+      hello_message.mac = mac_address;
+      hello_message.hostname = "ESP32-Caster";
+      hello_message.version = (char *)VERSION_STRING;
+      hello_message.client_name = "libsnapcast";
+      hello_message.os = "esp32";
+      hello_message.arch = "xtensa";
+      hello_message.instance = 1;
+      hello_message.id = mac_address;
+      hello_message.protocol_version = 2;
+
+      if (hello_message_serialized == NULL)
+        {
+          hello_message_serialized = hello_message_serialize (
+              &hello_message, (size_t *)&(base_message_rx.size));
+          if (!hello_message_serialized)
+            {
+              ESP_LOGE (TAG, "Failed to serialize hello message");
+              return;
+            }
+        }
+
+      result = base_message_serialize (
+          &base_message_rx, base_message_serialized, BASE_MESSAGE_SIZE);
+      if (result)
+        {
+          ESP_LOGE (TAG, "Failed to serialize base message");
+          return;
+        }
+
+      rc1 = netconn_write (lwipNetconn, base_message_serialized,
+                           BASE_MESSAGE_SIZE, NETCONN_NOCOPY);
+      if (rc1 != ERR_OK)
+        {
+          ESP_LOGE (TAG, "netconn failed to send base message");
+
+          continue;
+        }
+      rc1 = netconn_write (lwipNetconn, hello_message_serialized,
+                           base_message_rx.size, NETCONN_NOCOPY);
+      if (rc1 != ERR_OK)
+        {
+          ESP_LOGE (TAG, "netconn failed to send hello message");
+
+          continue;
+        }
+
+      ESP_LOGI (TAG, "netconn sent hello message");
+
+      free (hello_message_serialized);
+      hello_message_serialized = NULL;
+
+      // init default setting
+      scSet.buf_ms = 0;
+      scSet.codec = NONE;
+      scSet.bits = 0;
+      scSet.ch = 0;
+      scSet.sr = 0;
+      scSet.chkDur_ms = 0;
+      scSet.volume = 0;
+      scSet.muted = true;
+
+      uint64_t startTime, endTime;
+      char *tmp;
+      size_t remainderSize = 0;
+      size_t currentPos = 0;
+      size_t typedMsgCurrentPos = 0;
+      uint32_t typedMsgLen = 0;
+      uint32_t offset = 0;
+      size = 0;
+
+#define BASE_MESSAGE_STATE 0
+#define TYPED_MESSAGE_STATE 1
+
+      uint32_t state
+          = BASE_MESSAGE_STATE; // 0 ... base message, 1 ... typed message
+      uint32_t internalState = 0;
+      uint32_t counter = 0;
+
+      firstNetBuf = NULL;
+
+      flacWriteSemaphore = xSemaphoreCreateMutex ();
+      // xSemaphoreGive(flacWriteSemaphore);
+      xSemaphoreTake (flacWriteSemaphore, portMAX_DELAY);
+
+      flacReadSemaphore = xSemaphoreCreateMutex ();
+      xSemaphoreGive (
+          flacReadSemaphore); // only flac read callback can give semaphore
+
+      while (1)
+        {
+          rc2 = netconn_recv (lwipNetconn, &firstNetBuf);
+          if (rc2 != ERR_OK)
+            {
+              if (rc2 == ERR_CONN)
+                {
+                  netconn_close (lwipNetconn);
+
+                  // restart and try to reconnect
+                  break;
+                }
+
+              if (firstNetBuf != NULL)
+                {
+                  netbuf_delete (firstNetBuf);
+
+                  firstNetBuf = NULL;
+                }
+              continue;
+            }
+
+          // now parse the data
+          netbuf_first (firstNetBuf);
+          do
+            {
+              currentPos = 0;
+
+              rc1 = netbuf_data (firstNetBuf, (void **)&start, &len);
+              if (rc1 == ERR_OK)
+                {
+                  //				  ESP_LOGI (TAG, "netconn rx,
+                  // data len: %d, %d", len, netbuf_len(firstNetBuf) -
+                  // currentPos);
+                }
+              else
+                {
+                  ESP_LOGE (TAG, "netconn rx, couldn't get data");
+
+                  continue;
+                }
+
+              while (len > 0)
+                {
+                  rc1 = ERR_OK; // probably not necessary
+
+                  switch (state)
+                    {
+                    // decode base message
+                    case BASE_MESSAGE_STATE:
+                      {
+                        switch (internalState)
+                          {
+                          case 0:
+                            result = gettimeofday (&now, NULL);
+                            // ESP_LOGI(TAG, "time of day: %ld %ld",
+                            // now.tv_sec, now.tv_usec);
+                            if (result)
+                              {
+                                ESP_LOGW (TAG, "Failed to gettimeofday");
+                              }
+
+                            base_message_rx.type = *start & 0xFF;
+                            internalState++;
+                            break;
+
+                          case 1:
+                            base_message_rx.type |= (*start & 0xFF) << 8;
+                            internalState++;
+                            break;
+
+                          case 2:
+                            base_message_rx.id = *start & 0xFF;
+                            internalState++;
+                            break;
+
+                          case 3:
+                            base_message_rx.id |= (*start & 0xFF) << 8;
+                            internalState++;
+                            break;
+
+                          case 4:
+                            base_message_rx.refersTo = *start & 0xFF;
+                            internalState++;
+                            break;
+
+                          case 5:
+                            base_message_rx.refersTo |= (*start & 0xFF) << 8;
+                            internalState++;
+                            break;
+
+                          case 6:
+                            base_message_rx.sent.sec = *start & 0xFF;
+                            internalState++;
+                            break;
+
+                          case 7:
+                            base_message_rx.sent.sec |= (*start & 0xFF) << 8;
+                            internalState++;
+                            break;
+
+                          case 8:
+                            base_message_rx.sent.sec |= (*start & 0xFF) << 16;
+                            internalState++;
+                            break;
+
+                          case 9:
+                            base_message_rx.sent.sec |= (*start & 0xFF) << 24;
+                            internalState++;
+                            break;
+
+                          case 10:
+                            base_message_rx.sent.usec = *start & 0xFF;
+                            internalState++;
+                            break;
+
+                          case 11:
+                            base_message_rx.sent.usec |= (*start & 0xFF) << 8;
+                            internalState++;
+                            break;
+
+                          case 12:
+                            base_message_rx.sent.usec |= (*start & 0xFF) << 16;
+                            internalState++;
+                            break;
+
+                          case 13:
+                            base_message_rx.sent.usec |= (*start & 0xFF) << 24;
+                            internalState++;
+                            break;
+
+                          case 14:
+                            base_message_rx.received.sec = *start & 0xFF;
+                            internalState++;
+                            break;
+
+                          case 15:
+                            base_message_rx.received.sec |= (*start & 0xFF)
+                                                            << 8;
+                            internalState++;
+                            break;
+
+                          case 16:
+                            base_message_rx.received.sec |= (*start & 0xFF)
+                                                            << 16;
+                            internalState++;
+                            break;
+
+                          case 17:
+                            base_message_rx.received.sec |= (*start & 0xFF)
+                                                            << 24;
+                            internalState++;
+                            break;
+
+                          case 18:
+                            base_message_rx.received.usec = *start & 0xFF;
+                            internalState++;
+                            break;
+
+                          case 19:
+                            base_message_rx.received.usec |= (*start & 0xFF)
+                                                             << 8;
+                            internalState++;
+                            break;
+
+                          case 20:
+                            base_message_rx.received.usec |= (*start & 0xFF)
+                                                             << 16;
+                            internalState++;
+                            break;
+
+                          case 21:
+                            base_message_rx.received.usec |= (*start & 0xFF)
+                                                             << 24;
+                            internalState++;
+                            break;
+
+                          case 22:
+                            base_message_rx.size = *start & 0xFF;
+                            internalState++;
+                            break;
+
+                          case 23:
+                            base_message_rx.size |= (*start & 0xFF) << 8;
+                            internalState++;
+                            break;
+
+                          case 24:
+                            base_message_rx.size |= (*start & 0xFF) << 16;
+                            internalState++;
+                            break;
+
+                          case 25:
+                            base_message_rx.size |= (*start & 0xFF) << 24;
+                            internalState = 0;
+
+                            base_message_rx.received.sec = now.tv_sec;
+                            base_message_rx.received.usec = now.tv_usec;
+
+                            typedMsgCurrentPos = 0;
+
+                            // ESP_LOGI(TAG,"BM type %d ts %d.%d",
+                            // base_message_rx.type,
+                            // base_message_rx.received.sec,
+                            // base_message_rx.received.usec);
+                            //								ESP_LOGI(TAG,"%d
+                            //%d.%d", base_message_rx.type,
+                            // base_message_rx.received.sec,
+                            // base_message_rx.received.usec);
+
+                            state = TYPED_MESSAGE_STATE;
+                            break;
+                          }
+
+                        currentPos++;
+                        len--;
+                        start++;
+
+                        break;
+                      }
+
+                    // decode typed message
+                    case TYPED_MESSAGE_STATE:
+                      {
+                        switch (base_message_rx.type)
+                          {
+                          case SNAPCAST_MESSAGE_WIRE_CHUNK:
+                            {
+                              switch (internalState)
+                                {
+                                case 0:
+                                  {
+                                    wire_chnk.timestamp.sec = *start & 0xFF;
+
+                                    typedMsgCurrentPos++;
+                                    start++;
+                                    currentPos++;
+                                    len--;
+
+                                    internalState++;
+
+                                    break;
+                                  }
+
+                                case 1:
+                                  {
+                                    wire_chnk.timestamp.sec |= (*start & 0xFF)
+                                                               << 8;
+
+                                    typedMsgCurrentPos++;
+                                    start++;
+                                    currentPos++;
+                                    len--;
+
+                                    internalState++;
+
+                                    break;
+                                  }
+
+                                case 2:
+                                  {
+                                    wire_chnk.timestamp.sec |= (*start & 0xFF)
+                                                               << 16;
+
+                                    typedMsgCurrentPos++;
+                                    start++;
+                                    currentPos++;
+                                    len--;
+
+                                    internalState++;
+
+                                    break;
+                                  }
+
+                                case 3:
+                                  {
+                                    wire_chnk.timestamp.sec |= (*start & 0xFF)
+                                                               << 24;
+
+                                    //									  		  ESP_LOGI(TAG,
+                                    //"wire chunk time sec: %d",
+                                    // wire_chnk.timestamp.sec);
+
+                                    typedMsgCurrentPos++;
+                                    start++;
+                                    currentPos++;
+                                    len--;
+
+                                    internalState++;
+
+                                    break;
+                                  }
+
+                                case 4:
+                                  {
+                                    wire_chnk.timestamp.usec = (*start & 0xFF);
+
+                                    typedMsgCurrentPos++;
+                                    start++;
+                                    currentPos++;
+                                    len--;
+
+                                    internalState++;
+
+                                    break;
+                                  }
+
+                                case 5:
+                                  {
+                                    wire_chnk.timestamp.usec |= (*start & 0xFF)
+                                                                << 8;
+
+                                    typedMsgCurrentPos++;
+                                    start++;
+                                    currentPos++;
+                                    len--;
+
+                                    internalState++;
+
+                                    break;
+                                  }
+
+                                case 6:
+                                  {
+                                    wire_chnk.timestamp.usec |= (*start & 0xFF)
+                                                                << 16;
+
+                                    typedMsgCurrentPos++;
+                                    start++;
+                                    currentPos++;
+                                    len--;
+
+                                    internalState++;
+
+                                    break;
+                                  }
+
+                                case 7:
+                                  {
+                                    wire_chnk.timestamp.usec |= (*start & 0xFF)
+                                                                << 24;
+
+                                    //									  		  ESP_LOGI(TAG,
+                                    //"wire chunk time usec: %d",
+                                    // wire_chnk.timestamp.usec);
+
+                                    typedMsgCurrentPos++;
+                                    start++;
+                                    currentPos++;
+                                    len--;
+
+                                    internalState++;
+
+                                    break;
+                                  }
+
+                                case 8:
+                                  {
+                                    wire_chnk.size = (*start & 0xFF);
+
+                                    typedMsgCurrentPos++;
+                                    start++;
+                                    currentPos++;
+                                    len--;
+
+                                    internalState++;
+
+                                    break;
+                                  }
+
+                                case 9:
+                                  {
+                                    wire_chnk.size |= (*start & 0xFF) << 8;
+
+                                    typedMsgCurrentPos++;
+                                    start++;
+                                    currentPos++;
+                                    len--;
+
+                                    internalState++;
+
+                                    break;
+                                  }
+
+                                case 10:
+                                  {
+                                    wire_chnk.size |= (*start & 0xFF) << 16;
+
+                                    typedMsgCurrentPos++;
+                                    start++;
+                                    currentPos++;
+                                    len--;
+
+                                    internalState++;
+
+                                    break;
+                                  }
+
+                                case 11:
+                                  {
+                                    wire_chnk.size |= (*start & 0xFF) << 24;
+
+                                    typedMsgCurrentPos++;
+                                    start++;
+                                    currentPos++;
+                                    len--;
+
+                                    internalState++;
+
+                                    //											  ESP_LOGI(TAG,
+                                    //"got wire chunk with size: %d, at time
+                                    //%d.%d", wire_chnk.size,
+                                    // wire_chnk.timestamp.sec,
+                                    // wire_chnk.timestamp.usec);
+
+                                    break;
+                                  }
+
+                                case 12:
+                                  {
+                                    if (typedMsgCurrentPos
+                                        < base_message_rx.size)
+                                      {
+                                        size_t tmp;
+
+                                        if ((base_message_rx.size
+                                             - typedMsgCurrentPos)
+                                            <= len)
+                                          {
+                                            tmp = base_message_rx.size
+                                                  - typedMsgCurrentPos;
+                                          }
+                                        else
+                                          {
+                                            tmp = len;
+                                          }
+
+                                        if (received_header == true)
+                                          {
+                                            switch (codec)
+                                              {
+                                              case FLAC:
+                                                {
+                                                  flacData.bytes = tmp;
+                                                  flacData.inData = start;
+                                                  pFlacData = &flacData;
+
+                                                  xSemaphoreTake (
+                                                      flacReadSemaphore,
+                                                      portMAX_DELAY);
+
+                                                  // send data to flac decoder
+                                                  xQueueSend (flacReadQHdl,
+                                                              &pFlacData,
+                                                              portMAX_DELAY);
+                                                  // and wait until data was
+                                                  // processed
+                                                  xSemaphoreTake (
+                                                      flacReadSemaphore,
+                                                      portMAX_DELAY);
+                                                  // need to release mutex
+                                                  // afterwards for next round
+                                                  xSemaphoreGive (
+                                                      flacReadSemaphore);
+
+                                                  break;
+                                                }
+
+                                              default:
+                                                {
+                                                  ESP_LOGE (
+                                                      TAG,
+                                                      "Decoder not supported");
+
+                                                  return;
+
+                                                  break;
+                                                }
+                                              }
+                                          }
+
+                                        if (tmp <= len)
+                                          {
+                                            typedMsgCurrentPos += tmp;
+                                            start += tmp;
+                                            currentPos += tmp;
+                                            len -= tmp;
+                                          }
+                                        else
+                                          {
+                                            typedMsgCurrentPos += len;
+                                            start += len;
+                                            currentPos += len;
+                                            len -= len;
+                                          }
+                                      }
+                                    else
+                                      {
+                                        //												  ESP_LOGI(TAG,
+                                        //"data remaining %d %d", len,
+                                        // currentPos);
+                                        // ESP_LOGI(TAG, "got wire chunk with
+                                        // size: %d, at time %d.%d",
+                                        // wire_chnk.size,
+                                        // wire_chnk.timestamp.sec,
+                                        // wire_chnk.timestamp.usec);
+
+                                        if (received_header == true)
+                                          {
+                                            xSemaphoreGive (
+                                                flacWriteSemaphore);
+                                            // and wait until it is done
+                                            xQueueReceive (flacWriteQHdl,
+                                                           &pFlacData,
+                                                           portMAX_DELAY);
+
+                                            //												  wire_chunk_message_t
+                                            // pcm_chunk_message;
+                                            //
+                                            //												  pcm_chunk_message.size
+                                            //= pFlacData->bytes;
+                                            //												  pcm_chunk_message.payload
+                                            //= pFlacData->outData;
+                                            //												  pcm_chunk_message.timestamp
+                                            //= wire_chnk.timestamp;
+
+                                            //													  ESP_LOGI(TAG,
+                                            //"got pcm chunk with size: %d, at
+                                            // time %d.%d",
+                                            // pcm_chunk_message.size,
+                                            // pcm_chunk_message.timestamp.sec,
+                                            // pcm_chunk_message.timestamp.usec);
+                                            //
+                                            //												  scSet.chkDur_ms
+                                            //													  =
+                                            //(1000UL * pcm_chunk_message.size)
+                                            //														/
+                                            //(uint32_t) (scSet.ch *
+                                            //(scSet.bits / 8))
+                                            /// scSet.sr;
+                                            // if (player_send_snapcast_setting
+                                            //(&scSet) != pdPASS)
+                                            //													{
+                                            //													  ESP_LOGE
+                                            //(TAG,
+                                            //"Failed to notify sync task about
+                                            // "
+                                            // "codec. Did you init player?");
+                                            //
+                                            //													  return;
+                                            //													}
+
+                                            pcm_chunk_message_t
+                                                *pcm_chunk_message;
+
+                                            if (pFlacData->outData != NULL)
+                                              {
+                                                pcm_chunk_message
+                                                    = pFlacData->outData;
+                                                pcm_chunk_message->timestamp
+                                                    = wire_chnk.timestamp;
+                                              }
+
+                                            size_t decodedSize
+                                                = pFlacData->bytes;
+                                            scSet.chkDur_ms
+                                                = (1000UL * decodedSize)
+                                                  / (uint32_t) (
+                                                        scSet.ch
+                                                        * (scSet.bits / 8))
+                                                  / scSet.sr;
+                                            if (player_send_snapcast_setting (
+                                                    &scSet)
+                                                != pdPASS)
+                                              {
+                                                ESP_LOGE (TAG,
+                                                          "Failed to notify "
+                                                          "sync task about "
+                                                          "codec. Did you "
+                                                          "init player?");
+
+                                                return;
+                                              }
+
+#if CONFIG_USE_DSP_PROCESSOR
+                                            dsp_setup_flow (500, scSet.sr,
+                                                            scSet.chkDur_ms);
+                                            dsp_processor (
+                                                pcm_chunk_message.payload,
+                                                pcm_chunk_message.size,
+                                                dspFlow);
+#endif
+
+                                            if (pFlacData->outData != NULL)
+                                              {
+                                                insert_pcm_chunk (
+                                                    pcm_chunk_message);
+                                              }
+
+                                            // insert_pcm_chunk
+                                            // (&pcm_chunk_message);
+
+                                            // free(pFlacData->outData);
+                                          }
+
+                                        state = BASE_MESSAGE_STATE;
+                                        internalState = 0;
+
+                                        typedMsgCurrentPos = 0;
+                                      }
+
+                                    break;
+                                  }
+
+                                default:
+                                  {
+                                    ESP_LOGE (TAG, "wire chunk decoder "
+                                                   "shouldn't get here");
+
+                                    break;
+                                  }
+                                }
+
+                              break;
+                            }
+
+                          case SNAPCAST_MESSAGE_CODEC_HEADER:
+                            {
+                              switch (internalState)
+                                {
+                                case 0:
+                                  {
+                                    typedMsgLen = *start & 0xFF;
+
+                                    typedMsgCurrentPos++;
+                                    start++;
+                                    currentPos++;
+                                    len--;
+
+                                    internalState++;
+                                  }
+
+                                case 1:
+                                  {
+                                    typedMsgLen |= (*start & 0xFF) << 8;
+
+                                    typedMsgCurrentPos++;
+                                    start++;
+                                    currentPos++;
+                                    len--;
+
+                                    internalState++;
+
+                                    break;
+                                  }
+
+                                case 2:
+                                  {
+                                    typedMsgLen |= (*start & 0xFF) << 16;
+
+                                    typedMsgCurrentPos++;
+                                    start++;
+                                    currentPos++;
+                                    len--;
+
+                                    internalState++;
+
+                                    break;
+                                  }
+
+                                case 3:
+                                  {
+                                    typedMsgLen |= (*start & 0xFF) << 24;
+
+                                    tmp = malloc (typedMsgLen
+                                                  + 1); // allocate memory for
+                                                        // codec string
+                                    if (tmp == NULL)
+                                      {
+                                        ESP_LOGE (TAG, "couldn't get memory "
+                                                       "for codec string");
+
+                                        return;
+                                      }
+
+                                    offset = 0;
+                                    //									  		  ESP_LOGI(TAG,
+                                    //"codec header string is %d long",
+                                    // typedMsgLen);
+
+                                    typedMsgCurrentPos++;
+                                    start++;
+                                    currentPos++;
+                                    len--;
+
+                                    internalState++;
+
+                                    break;
+                                  }
+
+                                case 4:
+                                  {
+                                    if (len >= typedMsgLen)
+                                      {
+                                        memcpy (&tmp[offset], start,
+                                                typedMsgLen);
+
+                                        offset += typedMsgLen;
+
+                                        typedMsgCurrentPos += typedMsgLen;
+                                        start += typedMsgLen;
+                                        currentPos += typedMsgLen;
+                                        len -= typedMsgLen;
+                                      }
+                                    else
+                                      {
+                                        memcpy (&tmp[offset], start,
+                                                typedMsgLen);
+
+                                        offset += len;
+
+                                        typedMsgCurrentPos += len;
+                                        start += len;
+                                        currentPos += len;
+                                        len -= len;
+                                      }
+
+                                    if (offset == typedMsgLen)
+                                      {
+                                        tmp[typedMsgLen]
+                                            = 0; // NULL terminate string
+
+                                        //											  ESP_LOGI
+                                        //(TAG, "got codec string: %s", tmp);
+
+                                        if (strcmp (tmp, "opus") == 0)
+                                          {
+                                            codec = OPUS;
+                                          }
+                                        else if (strcmp (tmp, "flac") == 0)
+                                          {
+                                            codec = FLAC;
+                                          }
+                                        else if (strcmp (tmp, "pcm") == 0)
+                                          {
+                                            codec = PCM;
+                                          }
+                                        else
+                                          {
+                                            codec = NONE;
+
+                                            ESP_LOGI (
+                                                TAG,
+                                                "Codec : %s not supported",
+                                                tmp);
+                                            ESP_LOGI (
+                                                TAG, "Change encoder codec to "
+                                                     "opus / flac / pcm in "
+                                                     "/etc/snapserver.conf on "
+                                                     "server");
+
+                                            return;
+                                          }
+
+                                        free (tmp);
+                                        tmp = NULL;
+
+                                        internalState++;
+                                      }
+
+                                    break;
+                                  }
+
+                                case 5:
+                                  {
+                                    typedMsgLen = *start & 0xFF;
+
+                                    typedMsgCurrentPos++;
+                                    start++;
+                                    currentPos++;
+                                    len--;
+
+                                    internalState++;
+                                  }
+
+                                case 6:
+                                  {
+                                    typedMsgLen |= (*start & 0xFF) << 8;
+
+                                    typedMsgCurrentPos++;
+                                    start++;
+                                    currentPos++;
+                                    len--;
+
+                                    internalState++;
+
+                                    break;
+                                  }
+
+                                case 7:
+                                  {
+                                    typedMsgLen |= (*start & 0xFF) << 16;
+
+                                    typedMsgCurrentPos++;
+                                    start++;
+                                    currentPos++;
+                                    len--;
+
+                                    internalState++;
+
+                                    break;
+                                  }
+
+                                case 8:
+                                  {
+                                    typedMsgLen |= (*start & 0xFF) << 24;
+
+                                    tmp = malloc (
+                                        typedMsgLen); // allocate memory for
+                                                      // codec string
+                                    if (tmp == NULL)
+                                      {
+                                        ESP_LOGE (TAG, "couldn't get memory "
+                                                       "for codec string");
+
+                                        return;
+                                      }
+
+                                    offset = 0;
+
+                                    typedMsgCurrentPos++;
+                                    start++;
+                                    currentPos++;
+                                    len--;
+
+                                    internalState++;
+
+                                    break;
+                                  }
+
+                                case 9:
+                                  {
+                                    if (len >= typedMsgLen)
+                                      {
+                                        memcpy (&tmp[offset], start,
+                                                typedMsgLen);
+
+                                        offset += typedMsgLen;
+
+                                        typedMsgCurrentPos += typedMsgLen;
+                                        start += typedMsgLen;
+                                        currentPos += typedMsgLen;
+                                        len -= typedMsgLen;
+                                      }
+                                    else
+                                      {
+                                        memcpy (&tmp[offset], start,
+                                                typedMsgLen);
+
+                                        offset += len;
+
+                                        typedMsgCurrentPos += len;
+                                        start += len;
+                                        currentPos += len;
+                                        len -= len;
+                                      }
+
+                                    if (offset == typedMsgLen)
+                                      {
+                                        // first ensure everything is set up
+                                        // correctly and resources are
+                                        // available
+                                        if (t_flac_decoder_task != NULL)
+                                          {
+                                            vTaskDelete (t_flac_decoder_task);
+                                            t_flac_decoder_task = NULL;
+                                          }
+
+                                        if (flacDecoder != NULL)
+                                          {
+                                            FLAC__stream_decoder_finish (
+                                                flacDecoder);
+                                            FLAC__stream_decoder_delete (
+                                                flacDecoder);
+                                            flacDecoder = NULL;
+                                          }
+
+                                        if (flacWriteQHdl != NULL)
+                                          {
+                                            vQueueDelete (flacWriteQHdl);
+                                            flacWriteQHdl = NULL;
+                                          }
+
+                                        if (flacReadQHdl != NULL)
+                                          {
+                                            vQueueDelete (flacReadQHdl);
+                                            flacReadQHdl = NULL;
+                                          }
+
+                                        if (codec == OPUS)
+                                          {
+                                            ESP_LOGI (
+                                                TAG,
+                                                "OPUS not implemented yet");
+
+                                            return;
+                                          }
+                                        else if (codec == FLAC)
+                                          {
+                                            if (t_flac_decoder_task == NULL)
+                                              {
+                                                xTaskCreatePinnedToCore (
+                                                    &flac_decoder_task,
+                                                    "flac_decoder_task",
+                                                    9 * 256, &scSet,
+                                                    FLAC_TASK_PRIORITY,
+                                                    &t_flac_decoder_task,
+                                                    FLAC_TASK_CORE_ID);
+                                              }
+
+                                            if (flacData.outData != NULL)
+                                              {
+                                                free (flacData.outData);
+                                                flacData.outData = NULL;
+                                              }
+
+                                            flacData.bytes = typedMsgLen;
+                                            flacData.inData = tmp;
+                                            pFlacData = &flacData;
+
+                                            // TODO: find a smarter way for
+                                            // this wait for task creation done
+                                            while (flacReadQHdl == NULL)
+                                              {
+                                                vTaskDelay (10);
+                                              }
+
+                                            xSemaphoreTake (flacReadSemaphore,
+                                                            portMAX_DELAY);
+
+                                            // send data to flac decoder
+                                            xQueueSend (flacReadQHdl,
+                                                        &pFlacData,
+                                                        portMAX_DELAY);
+                                            // and wait until data was
+                                            // processed
+                                            xSemaphoreTake (flacReadSemaphore,
+                                                            portMAX_DELAY);
+                                            // need to release mutex afterwards
+                                            // for next round
+                                            xSemaphoreGive (flacReadSemaphore);
+                                            // wait until it is done
+                                            xQueueReceive (flacWriteQHdl,
+                                                           &pFlacData,
+                                                           portMAX_DELAY);
+
+                                            ESP_LOGI (
+                                                TAG,
+                                                "fLaC sampleformat: %d:%d:%d",
+                                                scSet.sr, scSet.bits,
+                                                scSet.ch);
+                                          }
+                                        else if (codec == PCM)
+                                          {
+                                            ESP_LOGI (
+                                                TAG,
+                                                "PCM not implemented yet");
+
+                                            return;
+                                          }
+                                        else
+                                          {
+                                            ESP_LOGE (
+                                                TAG,
+                                                "codec header decoder "
+                                                "shouldn't get here after "
+                                                "codec string was detected");
+
+                                            return;
+                                          }
+
+                                        free (tmp);
+                                        tmp = NULL;
+
+                                        //											  ESP_LOGI(TAG,
+                                        //"done codec header msg");
+
+                                        trx.tv_sec = base_message_rx.sent.sec;
+                                        trx.tv_usec
+                                            = base_message_rx.sent.usec;
+                                        // we do this, so uint32_t timvals
+                                        // won't overflow if e.g. raspberry
+                                        // server is off to far
+                                        settimeofday (&trx, NULL);
+                                        ESP_LOGI (TAG,
+                                                  "syncing clock to server "
+                                                  "%ld.%06ld",
+                                                  trx.tv_sec, trx.tv_usec);
+
+                                        state = BASE_MESSAGE_STATE;
+                                        internalState = 0;
+
+                                        received_header = true;
+                                      }
+
+                                    break;
+                                  }
+
+                                default:
+                                  {
+                                    ESP_LOGE (TAG, "codec header decoder "
+                                                   "shouldn't get here");
+
+                                    break;
+                                  }
+                                }
+
+                              break;
+                            }
+
+                          case SNAPCAST_MESSAGE_SERVER_SETTINGS:
+                            {
+                              switch (internalState)
+                                {
+                                case 0:
+                                  {
+                                    while (
+                                        (netbuf_len (firstNetBuf) - currentPos)
+                                        < base_message_rx.size)
+                                      {
+                                        ESP_LOGI (TAG, "need more data");
+
+                                        // we need more data to process
+                                        rc1 = netconn_recv (lwipNetconn,
+                                                            &newNetBuf);
+                                        if (rc1 != ERR_OK)
+                                          {
+                                            ESP_LOGE (
+                                                TAG,
+                                                "rx error for need more data");
+
+                                            if (rc1 == ERR_CONN)
+                                              {
+                                                // netconn_close(lwipNetconn);
+                                                // // closing later, see first
+                                                // netconn_recv() in the loop
+
+                                                break;
+                                              }
+
+                                            if (newNetBuf != NULL)
+                                              {
+                                                netbuf_delete (newNetBuf);
+
+                                                newNetBuf = NULL;
+                                              }
+
+                                            continue;
+                                          }
+
+                                        netbuf_chain (firstNetBuf, newNetBuf);
+                                      }
+
+                                    if (rc1 == ERR_OK)
+                                      {
+                                        typedMsgLen = *start & 0xFF;
+
+                                        typedMsgCurrentPos++;
+                                        start++;
+                                        currentPos++;
+                                        len--;
+
+                                        internalState++;
+                                      }
+                                    else
+                                      {
+                                        ESP_LOGE (TAG, "some error");
+                                      }
+
+                                    break;
+                                  }
+
+                                case 1:
+                                  {
+                                    typedMsgLen |= (*start & 0xFF) << 8;
+
+                                    typedMsgCurrentPos++;
+                                    start++;
+                                    currentPos++;
+                                    len--;
+
+                                    internalState++;
+
+                                    break;
+                                  }
+
+                                case 2:
+                                  {
+                                    typedMsgLen |= (*start & 0xFF) << 16;
+
+                                    typedMsgCurrentPos++;
+                                    start++;
+                                    currentPos++;
+                                    len--;
+
+                                    internalState++;
+
+                                    break;
+                                  }
+
+                                case 3:
+                                  {
+                                    typedMsgLen |= (*start & 0xFF) << 24;
+
+                                    //									  		  ESP_LOGI(TAG,
+                                    //"server settings string is %d long",
+                                    // typedMsgLen);
+
+                                    typedMsgCurrentPos++;
+                                    start++;
+                                    currentPos++;
+                                    len--;
+
+                                    internalState++;
+
+                                    break;
+                                  }
+
+                                case 4:
+                                  {
+                                    // now get some memory for server settings
+                                    // string at this point there is still
+                                    // plenty of RAM available, so we use
+                                    // malloc and netbuf_copy() here
+                                    tmp = malloc (typedMsgLen + 1);
+
+                                    if (tmp == NULL)
+                                      {
+                                        ESP_LOGE (TAG,
+                                                  "couldn't get memory for "
+                                                  "server settings string");
+                                      }
+                                    else
+                                      {
+                                        netbuf_copy_partial (firstNetBuf, tmp,
+                                                             typedMsgLen,
+                                                             currentPos);
+
+                                        tmp[typedMsgLen]
+                                            = 0; // NULL terminate string
+
+                                        //									  			  ESP_LOGI
+                                        //(TAG, "got string: %s", tmp);
+
+                                        result
+                                            = server_settings_message_deserialize (
+                                                &server_settings_message, tmp);
+                                        if (result)
+                                          {
+                                            ESP_LOGE (TAG,
+                                                      "Failed to read server "
+                                                      "settings: %d",
+                                                      result);
+                                          }
+                                        else
+                                          {
+                                            // log mute state, buffer, latency
+                                            ESP_LOGI (TAG,
+                                                      "Buffer length:  %d",
+                                                      server_settings_message
+                                                          .buffer_ms);
+                                            ESP_LOGI (TAG,
+                                                      "Latency:        %d",
+                                                      server_settings_message
+                                                          .latency);
+                                            ESP_LOGI (
+                                                TAG, "Mute:           %d",
+                                                server_settings_message.muted);
+                                            ESP_LOGI (TAG,
+                                                      "Setting volume: %d",
+                                                      server_settings_message
+                                                          .volume);
+                                          }
+
+                                        // Volume setting using ADF HAL
+                                        // abstraction
+                                        if (scSet.muted
+                                            != server_settings_message.muted)
+                                          {
+                                            audio_hal_set_mute (
+                                                board_handle->audio_hal,
+                                                server_settings_message.muted);
+                                          }
+                                        if (scSet.volume
+                                            != server_settings_message.volume)
+                                          {
+                                            audio_hal_set_volume (
+                                                board_handle->audio_hal,
+                                                server_settings_message
+                                                    .volume);
+                                          }
+
+                                        scSet.cDacLat_ms
+                                            = server_settings_message.latency;
+                                        scSet.buf_ms = server_settings_message
+                                                           .buffer_ms;
+                                        scSet.muted
+                                            = server_settings_message.muted;
+                                        scSet.volume
+                                            = server_settings_message.volume;
+
+                                        if (player_send_snapcast_setting (
+                                                &scSet)
+                                            != pdPASS)
+                                          {
+                                            ESP_LOGE (
+                                                TAG,
+                                                "Failed to notify sync task. "
+                                                "Did you init player?");
+
+                                            return;
+                                          }
+
+                                        free (tmp);
+                                        tmp = NULL;
+                                      }
+
+                                    internalState++;
+
+                                    //											  currentPos++;
+                                    //											  len--;
+                                    //
+                                    //									  		  break;
+
+                                    // intentional fall through
+                                  }
+
+                                case 5:
+                                  {
+                                    size_t tmpSize = base_message_rx.size
+                                                     - typedMsgCurrentPos;
+
+                                    if (len > 0)
+                                      {
+                                        if (tmpSize < len)
+                                          {
+                                            start += tmpSize;
+                                            currentPos
+                                                += tmpSize; // will be
+                                                            // incremented by 1
+                                                            // later so -1 here
+                                            typedMsgCurrentPos += tmpSize;
+                                            len -= tmpSize;
+                                          }
+                                        else
+                                          {
+                                            start += len;
+                                            currentPos
+                                                += len; // will be incremented
+                                                        // by 1 later so -1
+                                                        // here
+                                            typedMsgCurrentPos += len;
+                                            len = 0;
+                                          }
+                                      }
+
+                                    if (typedMsgCurrentPos
+                                        >= base_message_rx.size)
+                                      {
+                                        //											  ESP_LOGI(TAG,
+                                        //"done server settings");
+
+                                        state = BASE_MESSAGE_STATE;
+                                        internalState = 0;
+
+                                        typedMsgCurrentPos = 0;
+                                      }
+
+                                    break;
+                                  }
+
+                                default:
+                                  {
+                                    ESP_LOGE (TAG, "server settings decoder "
+                                                   "shouldn't get here");
+
+                                    break;
+                                  }
+                                }
+
+                              break;
+                            }
+
+                          case SNAPCAST_MESSAGE_STREAM_TAGS:
+                            {
+                              size_t tmpSize
+                                  = base_message_rx.size - typedMsgCurrentPos;
+
+                              if (tmpSize < len)
+                                {
+                                  start += tmpSize;
+                                  currentPos
+                                      += tmpSize; // will be incremented by 1
+                                                  // later so -1 here
+                                  typedMsgCurrentPos += tmpSize;
+                                  len -= tmpSize;
+                                }
+                              else
+                                {
+                                  start += len;
+                                  currentPos += len; // will be incremented by
+                                                     // 1 later so -1 here
+                                  typedMsgCurrentPos += len;
+                                  len = 0;
+                                }
+
+                              if (typedMsgCurrentPos >= base_message_rx.size)
+                                {
+                                  //									  ESP_LOGI(TAG,
+                                  //"done stream tags with length %d %d %d",
+                                  // base_message_rx.size, currentPos,
+                                  // tmpSize);
+
+                                  typedMsgCurrentPos = 0;
+                                  // currentPos = 0;
+
+                                  state = BASE_MESSAGE_STATE;
+                                  internalState = 0;
+                                }
+
+                              break;
+                            }
+
+                          case SNAPCAST_MESSAGE_TIME:
+                            {
+                              switch (internalState)
+                                {
+                                case 0:
+                                  {
+                                    time_message_rx.latency.sec = *start;
+
+                                    typedMsgCurrentPos++;
+                                    start++;
+                                    currentPos++;
+                                    len--;
+
+                                    internalState++;
+
+                                    //											  if
+                                    //(len
+                                    //>= 4) { time_message.latency.sec =
+                                    // *start;
+                                    // start++; time_message.latency.sec
+                                    //|= (int32_t)*start << 8;
+                                    // start++;
+                                    // time_message.latency.sec
+                                    //|= (int32_t)*start << 16;
+                                    // start++;
+                                    // time_message.latency.sec
+                                    //|= (int32_t)*start << 24;
+                                    // start++;
+                                    //
+                                    //												  typedMsgCurrentPos
+                                    //+= 4;
+                                    // currentPos += 4;
+                                    // len -= 4;
+                                    //
+                                    //												  internalState
+                                    //+= 3;
+                                    //											  }
+                                    //											  else
+                                    // if (len
+                                    //>= 3) {
+                                    // time_message.latency.sec = *start;
+                                    //												  start++;
+                                    //												  time_message.latency.sec
+                                    //|= (int32_t)*start << 8;
+                                    // start++;
+                                    // time_message.latency.sec
+                                    //|= (int32_t)*start << 16;
+                                    // start++;
+                                    // time_message.latency.sec
+                                    //|= (int32_t)*start << 24;
+                                    // start++;
+                                    //
+                                    //												  typedMsgCurrentPos
+                                    //+= 4;
+                                    // currentPos += 4;
+                                    // len -= 4;
+                                    //
+                                    //												  internalState
+                                    //+= 3;
+                                    //											  }
+
+                                    break;
+                                  }
+
+                                case 1:
+                                  {
+                                    time_message_rx.latency.sec
+                                        |= (int32_t)*start << 8;
+
+                                    typedMsgCurrentPos++;
+                                    start++;
+                                    currentPos++;
+                                    len--;
+
+                                    internalState++;
+
+                                    break;
+                                  }
+
+                                case 2:
+                                  {
+                                    time_message_rx.latency.sec
+                                        |= (int32_t)*start << 16;
+
+                                    typedMsgCurrentPos++;
+                                    start++;
+                                    currentPos++;
+                                    len--;
+
+                                    internalState++;
+
+                                    break;
+                                  }
+
+                                case 3:
+                                  {
+                                    time_message_rx.latency.sec
+                                        |= (int32_t)*start << 24;
+
+                                    typedMsgCurrentPos++;
+                                    start++;
+                                    currentPos++;
+                                    len--;
+
+                                    internalState++;
+
+                                    break;
+                                  }
+
+                                case 4:
+                                  {
+                                    time_message_rx.latency.usec = *start;
+
+                                    typedMsgCurrentPos++;
+                                    start++;
+                                    currentPos++;
+                                    len--;
+
+                                    internalState++;
+
+                                    break;
+                                  }
+
+                                case 5:
+                                  {
+                                    time_message_rx.latency.usec
+                                        |= (int32_t)*start << 8;
+
+                                    typedMsgCurrentPos++;
+                                    start++;
+                                    currentPos++;
+                                    len--;
+
+                                    internalState++;
+
+                                    break;
+                                  }
+
+                                case 6:
+                                  {
+                                    time_message_rx.latency.usec
+                                        |= (int32_t)*start << 16;
+
+                                    typedMsgCurrentPos++;
+                                    start++;
+                                    currentPos++;
+                                    len--;
+
+                                    internalState++;
+
+                                    break;
+                                  }
+
+                                case 7:
+                                  {
+                                    time_message_rx.latency.usec
+                                        |= (int32_t)*start << 24;
+
+                                    typedMsgCurrentPos++;
+                                    start++;
+                                    currentPos++;
+                                    len--;
+
+                                    if (typedMsgCurrentPos
+                                        >= base_message_rx.size)
+                                      {
+                                        //												  ESP_LOGI(TAG,
+                                        //"done time message");
+
+                                        typedMsgCurrentPos = 0;
+
+                                        state = BASE_MESSAGE_STATE;
+                                        internalState = 0;
+
+                                        //            ESP_LOGI(TAG, "BaseTX :
+                                        //            %d %d ",
+                                        //			base_message.sent.sec
+                                        //,
+                                        // base_message.sent.usec);
+                                        // ESP_LOGI(TAG, "BaseRX
+                                        //: %d %d ",
+                                        // base_message.received.sec ,
+                                        // base_message.received.usec);
+                                        // ESP_LOGI(TAG, "baseTX->RX : %d s ",
+                                        // (base_message.received.sec
+                                        // -
+                                        //			base_message.sent.sec));
+                                        // ESP_LOGI(TAG,
+                                        // "baseTX->RX : %d ms ",
+                                        //			(base_message.received.usec
+                                        //-
+                                        // base_message.sent.usec)/1000);
+                                        // ESP_LOGI(TAG,
+                                        // "Latency : %d.%d ",
+                                        // time_message.latency.sec,
+                                        // time_message_rx.latency.usec/1000);
+
+                                        // tv == server to client latency (s2c)
+                                        // time_message_rx.latency == client to
+                                        // server latency(c2s)
+                                        // TODO the fact that I have to do this
+                                        // simple conversion means I should
+                                        // probably use the timeval struct
+                                        // instead of my own
+                                        trx.tv_sec
+                                            = base_message_rx.received.sec;
+                                        trx.tv_usec
+                                            = base_message_rx.received.usec;
+                                        ttx.tv_sec = base_message_rx.sent.sec;
+                                        ttx.tv_usec
+                                            = base_message_rx.sent.usec;
+                                        timersub (&trx, &ttx, &tdif);
+
+                                        trx.tv_sec
+                                            = time_message_rx.latency.sec;
+                                        trx.tv_usec
+                                            = time_message_rx.latency.usec;
+
+                                        // trx == c2s: client to server
+                                        // tdif == s2c: server to client
+                                        //                    ESP_LOGI(TAG,
+                                        //                    "c2s: %ld %ld",
+                                        //                    trx.tv_sec,
+                                        //                    trx.tv_usec);
+                                        //                    ESP_LOGI(TAG,
+                                        //                    "s2c:  %ld %ld",
+                                        //                    tdif.tv_sec,
+                                        //                    tdif.tv_usec);
+
+                                        timersub (&trx, &tdif,
+                                                  &tmpDiffToServer);
+                                        if ((tmpDiffToServer.tv_sec / 2) == 0)
+                                          {
+                                            tmpDiffToServer.tv_sec = 0;
+                                            tmpDiffToServer.tv_usec
+                                                = (suseconds_t) (
+                                                      (int64_t)tmpDiffToServer
+                                                          .tv_sec
+                                                      * 1000000LL / 2)
+                                                  + (int64_t)tmpDiffToServer
+                                                            .tv_usec
+                                                        / 2;
+                                          }
+                                        else
+                                          {
+                                            tmpDiffToServer.tv_sec /= 2;
+                                            tmpDiffToServer.tv_usec /= 2;
+                                          }
+
+                                        //							                   ESP_LOGI(TAG,
+                                        //							                   "Current
+                                        // latency: %ld.%06ld",
+                                        // tmpDiffToServer.tv_sec,
+                                        //							                   tmpDiffToServer.tv_usec);
+
+                                        // TODO: Move the time message sending
+                                        // to an own thread maybe following
+                                        // code is storing / initializing /
+                                        // resetting diff to server algorithm
+                                        // we collect a number of latencies and
+                                        // apply a median filter. Based on
+                                        // these we can get server now
+                                        {
+                                          struct timeval diff;
+                                          int64_t newValue;
+
+                                          // clear diffBuffer if last update is
+                                          // older than a minute
+                                          timersub (&now, &lastTimeSync,
+                                                    &diff);
+
+                                          if (diff.tv_sec > 60)
+                                            {
+                                              ESP_LOGW (
+                                                  TAG, "Last time sync older "
+                                                       "than a minute. "
+                                                       "Clearing time buffer");
+
+                                              reset_latency_buffer ();
+                                            }
+
+                                          newValue
+                                              = ((int64_t)
+                                                         tmpDiffToServer.tv_sec
+                                                     * 1000000LL
+                                                 + (int64_t)tmpDiffToServer
+                                                       .tv_usec);
+                                          player_latency_insert (newValue);
+
+                                          //                    ESP_LOGE(TAG,
+                                          //                    "latency %lld",
+                                          //                    newValue);
+
+                                          // store current time
+                                          lastTimeSync.tv_sec = now.tv_sec;
+                                          lastTimeSync.tv_usec = now.tv_usec;
+
+                                          if (xSemaphoreTake (
+                                                  timeSyncSemaphoreHandle, 0)
+                                              == pdTRUE)
+                                            {
+                                              ESP_LOGW (
+                                                  TAG,
+                                                  "couldn't take "
+                                                  "timeSyncSemaphoreHandle");
+                                            }
+
+                                          uint64_t timeout;
+                                          if (latency_buffer_full () > 0)
+                                            {
+                                              // we give
+                                              // timeSyncSemaphoreHandle after
+                                              // x µs through timer
+                                              // TODO: maybe start a periodic
+                                              // timer here, but we need to
+                                              // remember if it is already
+                                              // running then. also we need to
+                                              // stop it if
+                                              // reset_latency_buffer() was
+                                              // called
+                                              timeout = 1000000;
+                                            }
+                                          else
+                                            {
+                                              // Do a initial time sync with
+                                              // the server at boot we need to
+                                              // fill diffBuff fast so we get a
+                                              // good estimate of latency
+                                              timeout = 100000;
+                                            }
+
+                                          esp_timer_start_once (
+                                              timeSyncMessageTimer, timeout);
+                                        }
+                                      }
+                                    else
+                                      {
+                                        ESP_LOGE (TAG,
+                                                  "error time message, this "
+                                                  "shouldn't happen! %d %d",
+                                                  typedMsgCurrentPos,
+                                                  base_message_rx.size);
+
+                                        typedMsgCurrentPos = 0;
+
+                                        state = BASE_MESSAGE_STATE;
+                                        internalState = 0;
+                                      }
+
+                                    break;
+                                  }
+
+                                default:
+                                  {
+                                    ESP_LOGE (TAG,
+                                              "time message decoder shouldn't "
+                                              "get here %d %d %d",
+                                              typedMsgCurrentPos,
+                                              base_message_rx.size,
+                                              internalState);
+
+                                    break;
+                                  }
+                                }
+
+                              break;
+                            }
+
+                          default:
+                            {
+                              typedMsgCurrentPos++;
+                              start++;
+                              currentPos++;
+                              len--;
+
+                              if (typedMsgCurrentPos >= base_message_rx.size)
+                                {
+                                  ESP_LOGI (TAG,
+                                            "done unknown typed message %d",
+                                            base_message_rx.type);
+
+                                  state = BASE_MESSAGE_STATE;
+                                  internalState = 0;
+
+                                  typedMsgCurrentPos = 0;
+                                }
+
+                              break;
+                            }
+                          }
+
+                        break;
+                      }
+
+                    default:
+                      {
+                        break;
+                      }
+                    }
+
+                  if (rc1 != ERR_OK)
+                    {
+                      break;
+                    }
+                }
+            }
+          while (netbuf_next (firstNetBuf) >= 0);
+
+          netbuf_delete (firstNetBuf);
+
+          if (rc1 != ERR_OK)
+            {
+              ESP_LOGE (TAG, "Data error, closing netconn");
+
+              netconn_close (lwipNetconn);
+
+              break;
+            }
+
+          if (received_header == true)
+            {
+              if (xSemaphoreTake (timeSyncSemaphoreHandle, 0) == pdTRUE)
+                {
+                  result = gettimeofday (&now, NULL);
+                  // ESP_LOGI(TAG, "time of day: %ld %ld", now.tv_sec,
+                  // now.tv_usec);
+                  if (result)
+                    {
+                      ESP_LOGI (TAG, "Failed to gettimeofday");
+                      continue;
+                    }
+
+                  base_message_tx.type = SNAPCAST_MESSAGE_TIME;
+                  base_message_tx.id = id_counter++;
+                  base_message_tx.refersTo = 0;
+                  base_message_tx.received.sec = 0;
+                  base_message_tx.received.usec = 0;
+                  base_message_tx.sent.sec = now.tv_sec;
+                  base_message_tx.sent.usec = now.tv_usec;
+                  base_message_tx.size = TIME_MESSAGE_SIZE;
+
+                  result = base_message_serialize (&base_message_tx,
+                                                   base_message_serialized,
+                                                   BASE_MESSAGE_SIZE);
+                  if (result)
+                    {
+                      ESP_LOGE (TAG,
+                                "Failed to serialize base message for time");
+                      continue;
+                    }
+
+                  memset (&time_message_tx, 0, sizeof (time_message_tx));
+
+                  result = time_message_serialize (&time_message_tx,
+                                                   time_message_serialized,
+                                                   TIME_MESSAGE_SIZE);
+                  if (result)
+                    {
+                      ESP_LOGI (TAG, "Failed to serialize time message");
+                      continue;
+                    }
+
+                  rc1 = netconn_write (lwipNetconn, base_message_serialized,
+                                       BASE_MESSAGE_SIZE, NETCONN_NOCOPY);
+                  if (rc1 != ERR_OK)
+                    {
+                      ESP_LOGW (TAG, "error writing timesync base msg");
+
+                      continue;
+                    }
+
+                  rc1 = netconn_write (lwipNetconn, time_message_serialized,
+                                       TIME_MESSAGE_SIZE, NETCONN_NOCOPY);
+                  if (rc1 != ERR_OK)
+                    {
+                      ESP_LOGW (TAG, "error writing timesync msg");
+
+                      continue;
+                    }
+                }
+            }
+        }
+    }
+}
+
+/**
+ *
+ */
+static void
+http_get_task_backup (void *pvParameters)
+{
+  struct sockaddr_in servaddr;
+  char *start;
+  int sock = -1;
+  base_message_t base_message;
+  hello_message_t hello_message;
+  char *hello_message_serialized = NULL;
+  int result, size, id_counter;
+  struct timeval now, trx, tdif, ttx;
+  time_message_t time_message;
+  struct timeval tmpDiffToServer;
+  struct timeval lastTimeSync = { 0, 0 };
+  esp_timer_handle_t timeSyncMessageTimer = NULL;
+  int16_t frameSize = 960; // 960*2: 20ms, 960*1: 10ms
+  int16_t *audio = NULL;
+  int16_t pcm_size = 120;
+  uint16_t channels;
+  esp_err_t err = 0;
+  codec_header_message_t codec_header_message;
+  server_settings_message_t server_settings_message;
+  bool received_header = false;
+  mdns_result_t *r;
+  OpusDecoder *opusDecoder = NULL;
+  codec_type_t codec = NONE;
+  snapcastSetting_t scSet;
+  flacData_t flacData = { NULL, NULL, 0 };
+  flacData_t *pFlacData;
+  char *typedMsg = NULL;
+  uint32_t lastTypedMsgSize = 0;
+
+  // create a timer to send time sync messages every x µs
+  esp_timer_create (&tSyncArgs, &timeSyncMessageTimer);
+  timeSyncSemaphoreHandle = xSemaphoreCreateMutex ();
+  xSemaphoreGive (timeSyncSemaphoreHandle);
+
+  id_counter = 0;
+
+  while (1)
+    {
+      if (reset_latency_buffer () < 0)
+        {
+          ESP_LOGE (
+              TAG,
+              "reset_diff_buffer: couldn't reset median filter long. STOP");
+
+          return;
+        }
+
+      esp_timer_stop (timeSyncMessageTimer);
+      xSemaphoreGive (timeSyncSemaphoreHandle);
+
+      if (opusDecoder != NULL)
+        {
+          opus_decoder_destroy (opusDecoder);
+          opusDecoder = NULL;
+        }
+
+      if (t_flac_decoder_task != NULL)
+        {
+          vTaskDelete (t_flac_decoder_task);
+          t_flac_decoder_task = NULL;
+        }
+
+      if (flacDecoder != NULL)
+        {
+          FLAC__stream_decoder_finish (flacDecoder);
+          FLAC__stream_decoder_delete (flacDecoder);
+          flacDecoder = NULL;
+        }
+
+      if (flacWriteQHdl != NULL)
+        {
+          vQueueDelete (flacWriteQHdl);
+          flacWriteQHdl = NULL;
+        }
+
+      if (flacReadQHdl != NULL)
+        {
+          vQueueDelete (flacReadQHdl);
+          flacReadQHdl = NULL;
+        }
+
+#if SNAPCAST_SERVER_USE_MDNS
+      // Find snapcast server
+      // Connect to first snapcast server found
+      r = NULL;
+      err = 0;
+      while (!r || err)
+        {
+          ESP_LOGI (TAG, "Lookup snapcast service on network");
+          esp_err_t err = mdns_query_ptr ("_snapcast", "_tcp", 3000, 20, &r);
+          if (err)
+            {
+              ESP_LOGE (TAG, "Query Failed");
+            }
+
+          if (!r)
+            {
+              ESP_LOGW (TAG, "No results found!");
+            }
+
+          vTaskDelay (1000 / portTICK_PERIOD_MS);
+        }
+
+      char serverAddr[] = "255.255.255.255";
+      ESP_LOGI (TAG, "Found %s:%d",
+                inet_ntop (AF_INET, &(r->addr->addr.u_addr.ip4.addr),
+                           serverAddr, sizeof (serverAddr)),
+                r->port);
+
+      servaddr.sin_family = AF_INET;
+      servaddr.sin_addr.s_addr = r->addr->addr.u_addr.ip4.addr;
+      servaddr.sin_port = htons (r->port);
       mdns_query_results_free (r);
 #else
       // configure a failsafe snapserver according to CONFIG values
@@ -469,6 +2632,7 @@ http_get_task (void *pvParameters)
 #endif
       ESP_LOGI (TAG, "allocate socket");
       sock = socket (AF_INET, SOCK_STREAM, 0);
+
       if (sock < 0)
         {
           ESP_LOGE (TAG, "... Failed to allocate socket.");
@@ -586,10 +2750,20 @@ http_get_task (void *pvParameters)
       scSet.volume = 0;
       scSet.muted = true;
 
+      lastTypedMsgSize = 0;
+      if (typedMsg)
+        {
+          free (typedMsg);
+          typedMsg = NULL;
+        }
+
       uint64_t startTime, endTime;
 
       for (;;)
         {
+          //    	  ESP_LOGW (TAG, "stack free: %d",
+          //    uxTaskGetStackHighWaterMark(NULL));
+
           size = 0;
           result = 0;
           while (size < BASE_MESSAGE_SIZE)
@@ -636,22 +2810,70 @@ http_get_task (void *pvParameters)
                 }
 
               base_message.received.usec = now.tv_usec;
-              // ESP_LOGI(TAG,"%d %d : %d %d : %d %d",base_message.size,
-              //            				base_message.refersTo,
-              //					base_message.sent.sec,
-              //					base_message.sent.usec,
-              //					base_message.received.sec,
-              //					base_message.received.usec
-              //);
+              //               ESP_LOGI(TAG,"%d %d : %d %d : %d
+              //               %d",base_message.size,
+              //                          				base_message.refersTo,
+              //              					base_message.sent.sec,
+              //              					base_message.sent.usec,
+              //              					base_message.received.sec,
+              //              					base_message.received.usec
+              //              );
 
               // TODO: ensure this buffer is freed before task gets deleted
               size = 0;
-              char *typedMsg = malloc (sizeof (char) * base_message.size);
-              if (typedMsg == NULL)
+              if (lastTypedMsgSize < base_message.size)
                 {
-                  ESP_LOGE (TAG, "Couldn't get memory for typed message");
+                  //            	  typedMsg = (char *)heap_caps_realloc
+                  //            (typedMsg, base_message.size, MALLOC_CAP_8BIT);
+                  //				  if (typedMsg == NULL)
+                  {
+                    //            	  	  ESP_LOGI (TAG, "get memory
+                    //            for typed message %d, %d, %d",
+                    //            base_message.size,
+                    //            heap_caps_get_free_size(MALLOC_CAP_8BIT),
+                    //            heap_caps_get_largest_free_block(MALLOC_CAP_8BIT));
+                    typedMsg = (char *)heap_caps_realloc (
+                        typedMsg, base_message.size, MALLOC_CAP_8BIT);
 
-                  return;
+                    //            	  	  typedMsg = (char
+                    //            *)heap_caps_malloc (base_message.size,
+                    //            MALLOC_CAP_8BIT);
+                    if (typedMsg == NULL)
+                      {
+                        ESP_LOGE (
+                            TAG,
+                            "Couldn't get memory for typed message %d, %d, %d",
+                            base_message.size,
+                            heap_caps_get_free_size (MALLOC_CAP_8BIT),
+                            heap_caps_get_largest_free_block (
+                                MALLOC_CAP_8BIT));
+
+                        // dummy read next data to a char variable without
+                        // incrementing and drop it (base_message.size)
+                        char dummy;
+                        start = &dummy;
+                        while (size < base_message.size)
+                          {
+                            result = recv (sock, start, 1, 0);
+                            if (result < 0)
+                              {
+                                ESP_LOGW (TAG,
+                                          "Failed to read from server: %d",
+                                          result);
+
+                                break;
+                              }
+
+                            size++;
+                          }
+
+                        continue;
+                      }
+                    else
+                      {
+                        lastTypedMsgSize = base_message.size;
+                      }
+                  }
                 }
               start = typedMsg;
 
@@ -885,10 +3107,11 @@ http_get_task (void *pvParameters)
                   {
                     if (!received_header)
                       {
-                        if (typedMsg != NULL)
-                          {
-                            free (typedMsg);
-                          }
+                        //                        if (typedMsg != NULL)
+                        //                          {
+                        //                            free (typedMsg);
+                        //                            typedMsg = NULL;
+                        //                          }
 
                         continue;
                       }
@@ -906,11 +3129,12 @@ http_get_task (void *pvParameters)
                         break;
                       }
 
-                    //                     ESP_LOGI(TAG, "wire chnk with size:
-                    //                     %d, timestamp %d.%d",
-                    //                     wire_chunk_message.size,
-                    //                     wire_chunk_message.timestamp.sec,
-                    //                     wire_chunk_message.timestamp.usec);
+                    //					 ESP_LOGI(TAG, "wire
+                    // chnk with size:"
+                    //					 "%d, timestamp %d.%d",
+                    //					 wire_chunk_message.size,
+                    //					 wire_chunk_message.timestamp.sec,
+                    //					 wire_chunk_message.timestamp.usec);
 
                     // store chunk's timestamp, decoder callback
                     // will need it later
@@ -1082,7 +3306,14 @@ http_get_task (void *pvParameters)
                                          pcm_chunk_message.size, dspFlow);
 #endif
 
+                          //                          int ret;
+                          //                          do {
+                          //                        	  ret =
                           insert_pcm_chunk (&pcm_chunk_message);
+                          //                        	  if (ret < 0) {
+                          //                        		  vTaskDelay(10);
+                          //                        	  }
+                          //                          } while(ret != 0);
 
                           break;
                         }
@@ -1091,60 +3322,34 @@ http_get_task (void *pvParameters)
                         {
                           wire_chunk_message_t pcm_chunk_message;
 
-                          if (audio == NULL)
+                          size = wire_chunk_message.size;
+                          start = wire_chunk_message.payload;
+
+                          pcm_chunk_message.size = size;
+                          pcm_chunk_message.timestamp = timestamp;
+                          pcm_chunk_message.payload
+                              = wire_chunk_message.payload;
+
+                          scSet.chkDur_ms
+                              = (1000UL * pcm_chunk_message.size)
+                                / (uint32_t) (scSet.ch * (scSet.bits / 8))
+                                / scSet.sr;
+                          if (player_send_snapcast_setting (&scSet) != pdPASS)
                             {
-#if CONFIG_USE_PSRAM
-                              audio = (int16_t *)heap_caps_malloc (
-                                  pcm_chunk_message.size * sizeof (char),
-                                  MALLOC_CAP_8BIT
-                                      | MALLOC_CAP_SPIRAM); // 960*2: 20ms,
-                                                            // 960*1: 10ms
-#else
-                              audio = (int16_t *)malloc (pcm_chunk_message.size
-                                                         * sizeof (char));
-#endif
+                              ESP_LOGE (TAG,
+                                        "Failed to notify sync task about "
+                                        "codec. Did you init player?");
+
+                              return;
                             }
-
-                          if (audio == NULL)
-                            {
-                              ESP_LOGE (TAG, "Failed to allocate memory for "
-                                             "opus audio decoder");
-                            }
-                          else
-                            {
-                              size = wire_chunk_message.size;
-                              start = wire_chunk_message.payload;
-
-                              pcm_chunk_message.size = size;
-                              pcm_chunk_message.timestamp = timestamp;
-                              pcm_chunk_message.payload = (char *)audio;
-                              // TODO: if wire_chunk_message_free is done
-                              // differently this copy can be avoided
-                              memcpy (pcm_chunk_message.payload, start,
-                                      pcm_chunk_message.size);
-
-                              scSet.chkDur_ms
-                                  = (1000UL * pcm_chunk_message.size)
-                                    / (uint32_t) (scSet.ch * (scSet.bits / 8))
-                                    / scSet.sr;
-                              if (player_send_snapcast_setting (&scSet)
-                                  != pdPASS)
-                                {
-                                  ESP_LOGE (TAG,
-                                            "Failed to notify sync task about "
-                                            "codec. Did you init player?");
-
-                                  return;
-                                }
 
 #if CONFIG_USE_DSP_PROCESSOR
-                              dsp_setup_flow (500, scSet.sr, scSet.chkDur_ms);
-                              dsp_processor (pcm_chunk_message.payload,
-                                             pcm_chunk_message.size, dspFlow);
+                          dsp_setup_flow (500, scSet.sr, scSet.chkDur_ms);
+                          dsp_processor (pcm_chunk_message.payload,
+                                         pcm_chunk_message.size, dspFlow);
 #endif
 
-                              insert_pcm_chunk (&pcm_chunk_message);
-                            }
+                          insert_pcm_chunk (&pcm_chunk_message);
 
                           break;
                         }
@@ -1280,10 +3485,10 @@ http_get_task (void *pvParameters)
                       tmpDiffToServer.tv_usec /= 2;
                     }
 
-                  //						ESP_LOGI(TAG,
-                  //"Current
-                  // latency: %ld.%06ld", tmpDiffToServer.tv_sec,
-                  // tmpDiffToServer.tv_usec);
+                  //                   ESP_LOGI(TAG,
+                  //                   "Current latency: %ld.%06ld",
+                  //                   tmpDiffToServer.tv_sec,
+                  //                   tmpDiffToServer.tv_usec);
 
                   // TODO: Move the time message sending to an own thread maybe
                   // following code is storing / initializing / resetting diff
@@ -1309,7 +3514,8 @@ http_get_task (void *pvParameters)
                                 + (int64_t)tmpDiffToServer.tv_usec);
                     player_latency_insert (newValue);
 
-                    //              ESP_LOGE(TAG, "latency %lld", newValue);
+                    //                    ESP_LOGE(TAG, "latency %lld",
+                    //                    newValue);
 
                     // store current time
                     lastTimeSync.tv_sec = now.tv_sec;
@@ -1345,10 +3551,11 @@ http_get_task (void *pvParameters)
                   break;
                 }
 
-              if (typedMsg != NULL)
-                {
-                  free (typedMsg);
-                }
+              //              if (typedMsg != NULL)
+              //                {
+              //                  free (typedMsg);
+              //                  typedMsg = NULL;
+              //                }
             }
 
           if (received_header == true)
@@ -1423,8 +3630,8 @@ http_get_task (void *pvParameters)
                       break; // stop for(;;) will try to reconnect then
                     }
 
-                  // ESP_LOGI(TAG, "sent time sync message %ld.%06ld",
-                  // now.tv_sec, now.tv_usec);
+                  //                   ESP_LOGI(TAG, "sent time sync message
+                  //                   %ld.%06ld", now.tv_sec, now.tv_usec);
                 }
             }
 
@@ -1460,6 +3667,8 @@ app_main (void)
 
   audio_hal_ctrl_codec (board_handle->audio_hal, AUDIO_HAL_CODEC_MODE_BOTH,
                         AUDIO_HAL_CTRL_START);
+  audio_hal_set_mute (board_handle->audio_hal,
+                      true); // ensure no noise is sent after firmware crash
   i2s_mclk_gpio_select (0, 0);
   // setup_ma120();
 
@@ -1483,12 +3692,60 @@ app_main (void)
 #ifdef CONFIG_SNAPCLIENT_SNTP_ENABLE
   set_time_from_sntp ();
 #endif
-  xTaskCreatePinnedToCore (&ota_server_task, "ota_server_task", 4096, NULL,
+
+  xTaskCreatePinnedToCore (&ota_server_task, "ota", 14 * 256, NULL,
                            OTA_TASK_PRIORITY, t_ota_task, OTA_TASK_CORE_ID);
 
-  xTaskCreatePinnedToCore (&http_get_task, "http_get_task", 4 * 4096, NULL,
+  //  xTaskCreatePinnedToCore (&http_get_task, "http", 10 * 256, NULL,
+  //                           HTTP_TASK_PRIORITY, &t_http_get_task,
+  //                           HTTP_TASK_CORE_ID);
+
+  /*
+
+//  	  struct netconn *lwipNetconn;
+      struct ip_addr local_ip;
+      struct ip_addr remote_ip;
+      uint16_t remotePort = 1704;
+      int rc1, rc2;
+//
+//      while(1) {
+          lwipNetconn = netconn_new(NETCONN_TCP);
+          if ( lwipNetconn == NULL ) {
+                  ESP_LOGE (TAG, "can't create netconn");
+
+//      		  continue;
+          }
+//
+          local_ip.u_addr.ip4.addr = get_current_ip4().addr;
+          rc1 = netconn_bind ( lwipNetconn, &local_ip, 0 );
+          if (rc1 != ERR_OK) {
+                  ESP_LOGE (TAG, "can't bind local IP");
+          }
+          remote_ip.u_addr.ip4.addr = ipaddr_addr("192.168.1.54");
+          rc2 = netconn_connect ( lwipNetconn, &remote_ip, remotePort );
+          if (rc2 != ERR_OK) {
+                  ESP_LOGE (TAG, "can't connect to remote");
+          }
+          if ( rc1 != ERR_OK || rc2 != ERR_OK )
+          {
+                  netconn_delete ( lwipNetconn );
+//      		  continue;
+          }
+
+          ESP_LOGI (TAG, "netconn connected");
+//
+//      	  while (1) {
+//      		  vTaskDelay(10);
+//      	  }
+//      }
+
+ */
+
+  xTaskCreatePinnedToCore (&http_get_task, "http", 3 * 1024, NULL,
                            HTTP_TASK_PRIORITY, &t_http_get_task,
                            HTTP_TASK_CORE_ID);
+
+  //  start_wifi_logger(); // Start wifi logger
 
   while (1)
     {

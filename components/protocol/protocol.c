@@ -10,7 +10,7 @@
       Select audio source (Snapcast, RTPrx, Bluetooth, Signal generator)
       Enable DSP processing
   1 Device communication I2C
-  2 GPIO manipolation
+  2 GPIO manipulation
   3 Audio generator
   4 Telemetri subsystem
   5 Test function
