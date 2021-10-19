@@ -74,6 +74,13 @@ CONFIG_BOOTLOADER_RESERVE_RTC_SIZE=0
 # end of Security features
 
 #
+# Example Board Configuration
+#
+CONFIG_ESP_LYRAT_V4_3_BOARD=y
+CONFIG_ESP_CUSTOM_BOARD=y
+# end of Example Board Configuration
+
+#
 # Serial flasher config
 #
 CONFIG_ESPTOOLPY_BAUD_OTHER_VAL=115200
@@ -129,7 +136,6 @@ CONFIG_PARTITION_TABLE_MD5=y
 # Audio HAL
 #
 # CONFIG_AUDIO_BOARD_CUSTOM is not set
-CONFIG_ESP_LYRAT_V4_3_BOARD=y
 # CONFIG_ESP_LYRAT_V4_2_BOARD is not set
 # CONFIG_ESP_LYRATD_MSC_V2_1_BOARD is not set
 # CONFIG_ESP_LYRATD_MSC_V2_2_BOARD is not set
