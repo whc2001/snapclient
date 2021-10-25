@@ -160,8 +160,15 @@ wifi_init (void)
   wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT ();
   ESP_ERROR_CHECK (esp_wifi_init (&cfg));
 
+  esp_wifi_set_bandwidth (WIFI_IF_STA, WIFI_BW_HT20);
+
+  esp_wifi_set_protocol (WIFI_IF_STA, WIFI_PROTOCOL_11B | WIFI_PROTOCOL_11G
+                                          | WIFI_PROTOCOL_11N);
+  // esp_wifi_set_protocol(WIFI_IF_STA, WIFI_PROTOCOL_11B | WIFI_PROTOCOL_11G);
+  // esp_wifi_set_protocol(WIFI_IF_STA, WIFI_PROTOCOL_11B);
+
   // esp_wifi_set_ps(WIFI_PS_MIN_MODEM);
-  // esp_wifi_set_ps(WIFI_PS_NONE);
+  //   esp_wifi_set_ps(WIFI_PS_NONE);
 
 #if ENABLE_WIFI_PROVISIONING
   // Configuration for the provisioning manager
@@ -241,6 +248,12 @@ wifi_init (void)
 
       /* Start Wi-Fi station */
       ESP_ERROR_CHECK (esp_wifi_set_mode (WIFI_MODE_STA));
+
+      wifi_config_t wifi_config;
+      ESP_ERROR_CHECK (esp_wifi_get_config (WIFI_IF_STA, &wifi_config));
+      wifi_config.sta.sort_method = WIFI_CONNECT_AP_BY_SIGNAL;
+      ESP_ERROR_CHECK (esp_wifi_set_config (WIFI_IF_STA, &wifi_config));
+
       ESP_ERROR_CHECK (esp_wifi_start ());
 
       ESP_LOGI (TAG, "wifi_init_sta finished.");

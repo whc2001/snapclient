@@ -2408,37 +2408,43 @@ player_task (void *pvParameters)
                   adjust_apll (dir);
                 }
 
-              int64_t t;
-              get_diff_to_server (&t);
-
-              //              struct timeval now;
-              //              // get current time
-              //              if (gettimeofday (&now, NULL))
-              //			  {
-              //            	  ESP_LOGE (TAG, "Failed to get time of day");
-              //			  }
+              //              int64_t t;
+              //              get_diff_to_server (&t);
               //
-              //              // for getting rssi value
-              //              wifi_ap_record_t ap;
-              //              esp_wifi_sta_get_ap_info(&ap);
-              ////
-              //                  ESP_LOGI (TAG, "%ld.%ld, rssi: %d, %d,
-              //                  %lldus, %lldus %lldus, %d, %d, %d, %d, %d",
-              //                  now.tv_sec, now.tv_usec, ap.rssi,
-              //                		   dir, age, avg, t,
-              //                heap_caps_get_free_size (MALLOC_CAP_8BIT),
-              //                heap_caps_get_largest_free_block
-              //                (MALLOC_CAP_8BIT), uxQueueMessagesWaiting
-              //                (pcmChkQHdl),
-              //							heap_caps_get_free_size
-              //(MALLOC_CAP_32BIT | MALLOC_CAP_EXEC),
-              // heap_caps_get_largest_free_block (MALLOC_CAP_32BIT |
-              // MALLOC_CAP_EXEC));
+              //                            struct timeval now;
+              //                            // get current time
+              //                            if (gettimeofday (&now, NULL))
+              //              			  {
+              //                          	  ESP_LOGE (TAG, "Failed to get
+              //                          time of day");
+              //              			  }
+              //
+              //                            // for getting rssi value
+              //                            wifi_ap_record_t ap;
+              //                            esp_wifi_sta_get_ap_info(&ap);
+              //
+              //                                ESP_LOGI (TAG, "%ld.%ld, rssi:
+              //                                %d, %d, %lldus, %lldus %lldus,
+              //                                %d, %d, %d, %d, %d",
+              //                                now.tv_sec, now.tv_usec,
+              //                                ap.rssi,
+              //                              		   dir, age, avg, t,
+              //                              heap_caps_get_free_size
+              //                              (MALLOC_CAP_8BIT),
+              //                              heap_caps_get_largest_free_block
+              //                              (MALLOC_CAP_8BIT),
+              //                              uxQueueMessagesWaiting
+              //                              (pcmChkQHdl),
+              //              							heap_caps_get_free_size
+              //              (MALLOC_CAP_32BIT | MALLOC_CAP_EXEC),
+              //               heap_caps_get_largest_free_block
+              //               (MALLOC_CAP_32BIT | MALLOC_CAP_EXEC));
 
               // ESP_LOGI (TAG, "%d, %lldus, %lldus %lldus", dir, age, avg, t);
 
-              //              ESP_LOGI (TAG, "%d %lldus, %d", dir, avg,
-              //              uxQueueMessagesWaiting (pcmChkQHdl));
+              //				ESP_LOGI (TAG, "%d %lldus, %d",
+              // dir, avg, 				uxQueueMessagesWaiting
+              // (pcmChkQHdl));
 
               fragment = chnk->fragment;
               p_payload = fragment->payload;

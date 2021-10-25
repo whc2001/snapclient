@@ -82,7 +82,7 @@ const char *VERSION_STRING = "0.0.2";
 #define OTA_TASK_PRIORITY 6
 #define OTA_TASK_CORE_ID 1 // tskNO_AFFINITY
 
-#define FLAC_TASK_PRIORITY HTTP_TASK_PRIORITY
+#define FLAC_TASK_PRIORITY 6
 #define FLAC_TASK_CORE_ID 1 // tskNO_AFFINITY
 
 xTaskHandle t_ota_task = NULL;
@@ -247,24 +247,20 @@ write_callback (const FLAC__StreamDecoder *decoder, const FLAC__Frame *frame,
       for (i = 0; i < frame->header.blocksize; i++)
         {
           // write little endian
-          //		flacData->outData-[4 * i] = (uint8_t)buffer[0][i];
-          //		flacData->outData[4 * i + 1] = (uint8_t) (buffer[0][i]
-          //>> 8); 		flacData->outData[4 * i + 2] =
-          // (uint8_t)buffer[1][i]; 		flacData->outData[4 * i + 3] =
-          // (uint8_t)
-          //(buffer[1][i] >> 8);
+          // flacData->outData[4 * i] = (uint8_t)buffer[0][i];
+          // flacData->outData[4 * i + 1] = (uint8_t) (buffer[0][i] >> 8);
+          // flacData->outData[4 * i + 2] = (uint8_t)buffer[1][i];
+          // flacData->outData[4 * i + 3] = (uint8_t)(buffer[1][i] >> 8);
 
           // TODO: for now fragmented payload is not supported and the whole
           // chunk is expected to be in the first fragment
-          tmpData = ((uint32_t) ((buffer[1][i] >> 8) & 0xFF) << 24)
-                    | ((uint32_t) ((buffer[1][i] >> 0) & 0xFF) << 16)
-                    | ((uint32_t) ((buffer[0][i] >> 8) & 0xFF) << 8)
-                    | ((uint32_t) ((buffer[0][i] >> 0) & 0xFF) << 0);
+          tmpData = ((uint32_t) ((buffer[0][i] >> 8) & 0xFF) << 24)
+                    | ((uint32_t) ((buffer[0][i] >> 0) & 0xFF) << 16)
+                    | ((uint32_t) ((buffer[1][i] >> 8) & 0xFF) << 8)
+                    | ((uint32_t) ((buffer[1][i] >> 0) & 0xFF) << 0);
 
           uint32_t *test = &(flacData->outData->fragment->payload[4 * i]);
           *test = tmpData;
-          // memcpy((uint32_t *)&(flacData->outData->fragment->payload[4 * i]),
-          // &tmpData, sizeof(tmpData));
         }
     }
   else
@@ -3693,53 +3689,13 @@ app_main (void)
   set_time_from_sntp ();
 #endif
 
-  xTaskCreatePinnedToCore (&ota_server_task, "ota", 14 * 256, NULL,
-                           OTA_TASK_PRIORITY, t_ota_task, OTA_TASK_CORE_ID);
+  //  xTaskCreatePinnedToCore (&ota_server_task, "ota", 14 * 256, NULL,
+  //                           OTA_TASK_PRIORITY, t_ota_task,
+  //                           OTA_TASK_CORE_ID);
 
   //  xTaskCreatePinnedToCore (&http_get_task, "http", 10 * 256, NULL,
   //                           HTTP_TASK_PRIORITY, &t_http_get_task,
   //                           HTTP_TASK_CORE_ID);
-
-  /*
-
-//  	  struct netconn *lwipNetconn;
-      struct ip_addr local_ip;
-      struct ip_addr remote_ip;
-      uint16_t remotePort = 1704;
-      int rc1, rc2;
-//
-//      while(1) {
-          lwipNetconn = netconn_new(NETCONN_TCP);
-          if ( lwipNetconn == NULL ) {
-                  ESP_LOGE (TAG, "can't create netconn");
-
-//      		  continue;
-          }
-//
-          local_ip.u_addr.ip4.addr = get_current_ip4().addr;
-          rc1 = netconn_bind ( lwipNetconn, &local_ip, 0 );
-          if (rc1 != ERR_OK) {
-                  ESP_LOGE (TAG, "can't bind local IP");
-          }
-          remote_ip.u_addr.ip4.addr = ipaddr_addr("192.168.1.54");
-          rc2 = netconn_connect ( lwipNetconn, &remote_ip, remotePort );
-          if (rc2 != ERR_OK) {
-                  ESP_LOGE (TAG, "can't connect to remote");
-          }
-          if ( rc1 != ERR_OK || rc2 != ERR_OK )
-          {
-                  netconn_delete ( lwipNetconn );
-//      		  continue;
-          }
-
-          ESP_LOGI (TAG, "netconn connected");
-//
-//      	  while (1) {
-//      		  vTaskDelay(10);
-//      	  }
-//      }
-
- */
 
   xTaskCreatePinnedToCore (&http_get_task, "http", 3 * 1024, NULL,
                            HTTP_TASK_PRIORITY, &t_http_get_task,
