@@ -102,7 +102,7 @@ static audio_board_handle_t board_handle = NULL;
 #define SNAPCAST_CLIENT_NAME CONFIG_SNAPCLIENT_NAME
 
 /* Logging tag */
-static const char *TAG = "SNAPCAST";
+static const char *TAG = "SC";
 
 extern char mac_address[18];
 
@@ -259,7 +259,8 @@ write_callback (const FLAC__StreamDecoder *decoder, const FLAC__Frame *frame,
                     | ((uint32_t) ((buffer[1][i] >> 8) & 0xFF) << 8)
                     | ((uint32_t) ((buffer[1][i] >> 0) & 0xFF) << 0);
 
-          uint32_t *test = &(flacData->outData->fragment->payload[4 * i]);
+          uint32_t *test
+              = (uint32_t *)(&(flacData->outData->fragment->payload[4 * i]));
           *test = tmpData;
         }
     }
@@ -417,6 +418,7 @@ http_get_task (void *pvParameters)
   snapcastSetting_t scSet;
   flacData_t flacData = { NULL, NULL, 0 };
   flacData_t *pFlacData;
+  pcm_chunk_message_t *pcmData = NULL;
   char *typedMsg = NULL;
   uint32_t lastTypedMsgSize = 0;
   //  struct netconn *lwipNetconn = NULL;
@@ -656,14 +658,18 @@ http_get_task (void *pvParameters)
       scSet.volume = 0;
       scSet.muted = true;
 
+      uint32_t cntTmp = 0;
       uint64_t startTime, endTime;
       char *tmp;
-      size_t remainderSize = 0;
+      int32_t remainderSize = 0;
       size_t currentPos = 0;
       size_t typedMsgCurrentPos = 0;
       uint32_t typedMsgLen = 0;
       uint32_t offset = 0;
       size = 0;
+      uint32_t tmpData = 0;
+      uint32_t *p_tmpData = NULL;
+      int32_t shift = 24;
 
 #define BASE_MESSAGE_STATE 0
 #define TYPED_MESSAGE_STATE 1
@@ -1103,85 +1109,239 @@ http_get_task (void *pvParameters)
 
                                 case 12:
                                   {
-                                    if (typedMsgCurrentPos
-                                        < base_message_rx.size)
+                                    size_t tmp;
+
+                                    if ((base_message_rx.size
+                                         - typedMsgCurrentPos)
+                                        <= len)
                                       {
-                                        size_t tmp;
-
-                                        if ((base_message_rx.size
-                                             - typedMsgCurrentPos)
-                                            <= len)
-                                          {
-                                            tmp = base_message_rx.size
-                                                  - typedMsgCurrentPos;
-                                          }
-                                        else
-                                          {
-                                            tmp = len;
-                                          }
-
-                                        if (received_header == true)
-                                          {
-                                            switch (codec)
-                                              {
-                                              case FLAC:
-                                                {
-                                                  flacData.bytes = tmp;
-                                                  flacData.inData = start;
-                                                  pFlacData = &flacData;
-
-                                                  xSemaphoreTake (
-                                                      flacReadSemaphore,
-                                                      portMAX_DELAY);
-
-                                                  // send data to flac decoder
-                                                  xQueueSend (flacReadQHdl,
-                                                              &pFlacData,
-                                                              portMAX_DELAY);
-                                                  // and wait until data was
-                                                  // processed
-                                                  xSemaphoreTake (
-                                                      flacReadSemaphore,
-                                                      portMAX_DELAY);
-                                                  // need to release mutex
-                                                  // afterwards for next round
-                                                  xSemaphoreGive (
-                                                      flacReadSemaphore);
-
-                                                  break;
-                                                }
-
-                                              default:
-                                                {
-                                                  ESP_LOGE (
-                                                      TAG,
-                                                      "Decoder not supported");
-
-                                                  return;
-
-                                                  break;
-                                                }
-                                              }
-                                          }
-
-                                        if (tmp <= len)
-                                          {
-                                            typedMsgCurrentPos += tmp;
-                                            start += tmp;
-                                            currentPos += tmp;
-                                            len -= tmp;
-                                          }
-                                        else
-                                          {
-                                            typedMsgCurrentPos += len;
-                                            start += len;
-                                            currentPos += len;
-                                            len -= len;
-                                          }
+                                        tmp = base_message_rx.size
+                                              - typedMsgCurrentPos;
                                       }
                                     else
                                       {
-                                        //												  ESP_LOGI(TAG,
+                                        tmp = len;
+                                      }
+
+                                    if (received_header == true)
+                                      {
+                                        switch (codec)
+                                          {
+                                          case FLAC:
+                                            {
+                                              flacData.bytes = tmp;
+                                              flacData.inData = start;
+                                              pFlacData = &flacData;
+
+                                              xSemaphoreTake (
+                                                  flacReadSemaphore,
+                                                  portMAX_DELAY);
+
+                                              // send data to flac decoder
+                                              xQueueSend (flacReadQHdl,
+                                                          &pFlacData,
+                                                          portMAX_DELAY);
+                                              // and wait until data was
+                                              // processed
+                                              xSemaphoreTake (
+                                                  flacReadSemaphore,
+                                                  portMAX_DELAY);
+                                              // need to release mutex
+                                              // afterwards for next round
+                                              xSemaphoreGive (
+                                                  flacReadSemaphore);
+
+                                              break;
+                                            }
+
+                                          case PCM:
+                                            {
+                                              if (pcmData == NULL)
+                                                {
+                                                  if (allocate_pcm_chunk_memory (
+                                                          &pcmData,
+                                                          wire_chnk.size)
+                                                      < 0)
+                                                    {
+                                                      pcmData = NULL;
+                                                    }
+
+                                                  offset = 0;
+                                                  remainderSize = 0;
+                                                  cntTmp = 0;
+                                                }
+
+                                              if (pcmData != NULL)
+                                                {
+                                                  uint32_t *sample;
+
+                                                  int max = 0, begin = 0;
+
+                                                  while (remainderSize)
+                                                    {
+                                                      tmpData
+                                                          |= ((uint32_t)start
+                                                                  [begin++]
+                                                              << (8
+                                                                  * (remainderSize
+                                                                     - 1)));
+
+                                                      remainderSize--;
+                                                      if (remainderSize < 0)
+                                                        {
+                                                          ESP_LOGE (
+                                                              TAG,
+                                                              "shift < 0 this "
+                                                              "shouldn't "
+                                                              "happen");
+
+                                                          return;
+                                                        }
+                                                    }
+
+                                                  // check if we need to write
+                                                  // a remaining sample
+                                                  if (begin > 0)
+                                                    {
+                                                      // need to reorder bytes
+                                                      // in sample for correct
+                                                      // playback
+                                                      uint8_t dummy1;
+                                                      uint32_t dummy2 = 0;
+
+                                                      // TODO: find a more
+                                                      // clever way to do this,
+                                                      // best would be to
+                                                      // actually store it the
+                                                      // right way in the first
+                                                      // place
+                                                      dummy1 = tmpData >> 24;
+                                                      dummy2
+                                                          |= (uint32_t)dummy1
+                                                             << 16;
+                                                      dummy1 = tmpData >> 16;
+                                                      dummy2
+                                                          |= (uint32_t)dummy1
+                                                             << 24;
+                                                      dummy1 = tmpData >> 8;
+                                                      dummy2
+                                                          |= (uint32_t)dummy1
+                                                             << 0;
+                                                      dummy1 = tmpData >> 0;
+                                                      dummy2
+                                                          |= (uint32_t)dummy1
+                                                             << 8;
+                                                      tmpData = dummy2;
+
+                                                      sample = (uint32_t *)(&(
+                                                          pcmData->fragment
+                                                              ->payload
+                                                                  [offset]));
+                                                      *sample = tmpData;
+
+                                                      offset += 4;
+                                                    }
+
+                                                  remainderSize
+                                                      = (tmp - begin) % 4;
+                                                  max = (tmp - begin)
+                                                        - remainderSize;
+
+                                                  for (int i = begin; i < max;
+                                                       i += 4)
+                                                    {
+                                                      // TODO: for now
+                                                      // fragmented payload is
+                                                      // not supported and the
+                                                      // whole chunk is
+                                                      // expected to be in the
+                                                      // first fragment
+                                                      tmpData
+                                                          = ((uint32_t)start[i]
+                                                             << 16)
+                                                            | ((uint32_t)
+                                                                   start[i + 1]
+                                                               << 24)
+                                                            | ((uint32_t)
+                                                                   start[i + 2]
+                                                               << 0)
+                                                            | ((uint32_t)
+                                                                   start[i + 3]
+                                                               << 8);
+
+                                                      // ensure 32bit alligned
+                                                      // write
+                                                      sample = (uint32_t *)(&(
+                                                          pcmData->fragment
+                                                              ->payload
+                                                                  [offset]));
+                                                      *sample = tmpData;
+
+                                                      offset += 4;
+                                                    }
+
+                                                  tmpData = 0;
+                                                  while (remainderSize)
+                                                    {
+                                                      tmpData
+                                                          |= ((uint32_t)
+                                                                  start[max++]
+                                                              << (8
+                                                                  * (remainderSize
+                                                                     - 1)));
+
+                                                      remainderSize--;
+
+                                                      if (remainderSize < 0)
+                                                        {
+                                                          ESP_LOGE (
+                                                              TAG,
+                                                              "shift < 0 this "
+                                                              "shouldn't "
+                                                              "happen");
+
+                                                          return;
+                                                        }
+                                                    }
+
+                                                  remainderSize
+                                                      = (tmp - begin) % 4;
+                                                  if (remainderSize)
+                                                    {
+                                                      remainderSize
+                                                          = 4
+                                                            - remainderSize; // these are the still needed bytes for next round
+                                                      tmpData
+                                                          <<= (8
+                                                               * remainderSize); // shift data to correct position
+                                                    }
+                                                }
+
+                                              break;
+                                            }
+
+                                          default:
+                                            {
+                                              ESP_LOGE (
+                                                  TAG,
+                                                  "Decoder (1) not supported");
+
+                                              return;
+
+                                              break;
+                                            }
+                                          }
+                                      }
+
+                                    typedMsgCurrentPos += tmp;
+                                    start += tmp;
+                                    currentPos += tmp;
+                                    len -= tmp;
+
+                                    if (typedMsgCurrentPos
+                                        >= base_message_rx.size)
+                                      {
+                                        // ESP_LOGI(TAG,
                                         //"data remaining %d %d", len,
                                         // currentPos);
                                         // ESP_LOGI(TAG, "got wire chunk with
@@ -1192,100 +1352,133 @@ http_get_task (void *pvParameters)
 
                                         if (received_header == true)
                                           {
-                                            xSemaphoreGive (
-                                                flacWriteSemaphore);
-                                            // and wait until it is done
-                                            xQueueReceive (flacWriteQHdl,
-                                                           &pFlacData,
-                                                           portMAX_DELAY);
-
-                                            //												  wire_chunk_message_t
-                                            // pcm_chunk_message;
-                                            //
-                                            //												  pcm_chunk_message.size
-                                            //= pFlacData->bytes;
-                                            //												  pcm_chunk_message.payload
-                                            //= pFlacData->outData;
-                                            //												  pcm_chunk_message.timestamp
-                                            //= wire_chnk.timestamp;
-
-                                            //													  ESP_LOGI(TAG,
-                                            //"got pcm chunk with size: %d, at
-                                            // time %d.%d",
-                                            // pcm_chunk_message.size,
-                                            // pcm_chunk_message.timestamp.sec,
-                                            // pcm_chunk_message.timestamp.usec);
-                                            //
-                                            //												  scSet.chkDur_ms
-                                            //													  =
-                                            //(1000UL * pcm_chunk_message.size)
-                                            //														/
-                                            //(uint32_t) (scSet.ch *
-                                            //(scSet.bits / 8))
-                                            /// scSet.sr;
-                                            // if (player_send_snapcast_setting
-                                            //(&scSet) != pdPASS)
-                                            //													{
-                                            //													  ESP_LOGE
-                                            //(TAG,
-                                            //"Failed to notify sync task about
-                                            // "
-                                            // "codec. Did you init player?");
-                                            //
-                                            //													  return;
-                                            //													}
-
-                                            pcm_chunk_message_t
-                                                *pcm_chunk_message;
-
-                                            if (pFlacData->outData != NULL)
+                                            switch (codec)
                                               {
-                                                pcm_chunk_message
-                                                    = pFlacData->outData;
-                                                pcm_chunk_message->timestamp
-                                                    = wire_chnk.timestamp;
-                                              }
+                                              case FLAC:
+                                                {
+                                                  xSemaphoreGive (
+                                                      flacWriteSemaphore);
+                                                  // and wait until it is done
+                                                  xQueueReceive (
+                                                      flacWriteQHdl,
+                                                      &pFlacData,
+                                                      portMAX_DELAY);
 
-                                            size_t decodedSize
-                                                = pFlacData->bytes;
-                                            scSet.chkDur_ms
-                                                = (1000UL * decodedSize)
-                                                  / (uint32_t) (
-                                                        scSet.ch
-                                                        * (scSet.bits / 8))
-                                                  / scSet.sr;
-                                            if (player_send_snapcast_setting (
-                                                    &scSet)
-                                                != pdPASS)
-                                              {
-                                                ESP_LOGE (TAG,
+                                                  pcm_chunk_message_t
+                                                      *pcm_chunk_message;
+
+                                                  if (pFlacData->outData
+                                                      != NULL)
+                                                    {
+                                                      pcm_chunk_message
+                                                          = pFlacData->outData;
+                                                      pcm_chunk_message
+                                                          ->timestamp
+                                                          = wire_chnk
+                                                                .timestamp;
+                                                    }
+
+                                                  size_t decodedSize
+                                                      = pFlacData->bytes;
+                                                  scSet.chkDur_ms
+                                                      = (1000UL * decodedSize)
+                                                        / (uint32_t) (
+                                                              scSet.ch
+                                                              * (scSet.bits
+                                                                 / 8))
+                                                        / scSet.sr;
+                                                  if (player_send_snapcast_setting (
+                                                          &scSet)
+                                                      != pdPASS)
+                                                    {
+                                                      ESP_LOGE (
+                                                          TAG,
                                                           "Failed to notify "
                                                           "sync task about "
                                                           "codec. Did you "
                                                           "init player?");
 
-                                                return;
-                                              }
+                                                      return;
+                                                    }
 
 #if CONFIG_USE_DSP_PROCESSOR
-                                            dsp_setup_flow (500, scSet.sr,
-                                                            scSet.chkDur_ms);
-                                            dsp_processor (
-                                                pcm_chunk_message.payload,
-                                                pcm_chunk_message.size,
-                                                dspFlow);
+                                                  dsp_setup_flow (
+                                                      500, scSet.sr,
+                                                      scSet.chkDur_ms);
+                                                  dsp_processor (
+                                                      pcm_chunk_message
+                                                          .payload,
+                                                      pcm_chunk_message.size,
+                                                      dspFlow);
 #endif
 
-                                            if (pFlacData->outData != NULL)
-                                              {
-                                                insert_pcm_chunk (
-                                                    pcm_chunk_message);
+                                                  if (pFlacData->outData
+                                                      != NULL)
+                                                    {
+                                                      insert_pcm_chunk (
+                                                          pcm_chunk_message);
+                                                    }
+
+                                                  break;
+                                                }
+
+                                              case PCM:
+                                                {
+                                                  size_t decodedSize
+                                                      = pcmData->fragment
+                                                            ->size;
+
+                                                  pcmData->timestamp
+                                                      = wire_chnk.timestamp;
+
+                                                  scSet.chkDur_ms
+                                                      = (1000UL * decodedSize)
+                                                        / (uint32_t) (
+                                                              scSet.ch
+                                                              * (scSet.bits
+                                                                 / 8))
+                                                        / scSet.sr;
+                                                  if (player_send_snapcast_setting (
+                                                          &scSet)
+                                                      != pdPASS)
+                                                    {
+                                                      ESP_LOGE (
+                                                          TAG,
+                                                          "Failed to notify "
+                                                          "sync task about "
+                                                          "codec. Did you "
+                                                          "init player?");
+
+                                                      return;
+                                                    }
+
+#if CONFIG_USE_DSP_PROCESSOR
+                                                  dsp_setup_flow (
+                                                      500, scSet.sr,
+                                                      scSet.chkDur_ms);
+                                                  dsp_processor (
+                                                      pcm_chunk_message
+                                                          .payload,
+                                                      pcm_chunk_message.size,
+                                                      dspFlow);
+#endif
+
+                                                  insert_pcm_chunk (pcmData);
+                                                  pcmData = NULL;
+                                                  break;
+                                                }
+
+                                              default:
+                                                {
+                                                  ESP_LOGE (TAG,
+                                                            "Decoder (2) not "
+                                                            "supported");
+
+                                                  return;
+
+                                                  break;
+                                                }
                                               }
-
-                                            // insert_pcm_chunk
-                                            // (&pcm_chunk_message);
-
-                                            // free(pFlacData->outData);
                                           }
 
                                         state = BASE_MESSAGE_STATE;
@@ -1647,11 +1840,25 @@ http_get_task (void *pvParameters)
                                           }
                                         else if (codec == PCM)
                                           {
+                                            memcpy (&channels, tmp + 22,
+                                                    sizeof (channels));
+                                            uint32_t rate;
+                                            memcpy (&rate, tmp + 24,
+                                                    sizeof (rate));
+                                            uint16_t bits;
+                                            memcpy (&bits, tmp + 34,
+                                                    sizeof (bits));
+
+                                            scSet.codec = codec;
+                                            scSet.bits = bits;
+                                            scSet.ch = channels;
+                                            scSet.sr = rate;
+
                                             ESP_LOGI (
                                                 TAG,
-                                                "PCM not implemented yet");
-
-                                            return;
+                                                "pcm sampleformat: %d:%d:%d",
+                                                scSet.sr, scSet.bits,
+                                                scSet.ch);
                                           }
                                         else
                                           {
