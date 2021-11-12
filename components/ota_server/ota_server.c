@@ -22,8 +22,6 @@
 
 #include "ota_server.h"
 
-#include "wifi_logger.h"
-
 extern xTaskHandle t_http_get_task;
 
 const int OTA_CONNECTED_BIT = BIT0;
@@ -196,7 +194,6 @@ ota_server_start_my (void)
   // dsp_i2s_task_deinit();
   vTaskDelete (t_http_get_task);
   deinit_player (); // ensure this is called after http_task was killed
-  stop_wifi_logger ();
 
   int recv_len;
   char ota_buff[OTA_BUFF_SIZE] = { 0 };

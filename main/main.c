@@ -31,8 +31,6 @@
 #include "mdns.h"
 #include "net_functions.h"
 
-#include "wifi_logger.h"
-
 // Web socket server
 #include "websocket_if.h"
 //#include "websocket_server.h"
@@ -3884,8 +3882,6 @@ app_main (void)
   xTaskCreatePinnedToCore (&http_get_task, "http", 3 * 1024, NULL,
                            HTTP_TASK_PRIORITY, &t_http_get_task,
                            HTTP_TASK_CORE_ID);
-
-  //  start_wifi_logger(); // Start wifi logger
 
   while (1)
     {
