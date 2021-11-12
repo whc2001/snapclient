@@ -4,3 +4,6 @@
 [submodule "components/flac/flac"]
 	path = components/flac/flac
 	url = https://github.com/xiph/flac.git
+[submodule "components/opus/opus"]
+	path = components/opus/opus
+	url = https://github.com/xiph/opus
