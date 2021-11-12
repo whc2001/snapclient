@@ -21,9 +21,10 @@ struct pcm_chunk_fragment
   pcm_chunk_fragment_t *nextFragment;
 };
 
-typedef struct pcm_chunk_message
+typedef struct pcmData
 {
   tv_t timestamp;
+  uint32_t totalSize;
   pcm_chunk_fragment_t *fragment;
 } pcm_chunk_message_t;
 
@@ -59,7 +60,7 @@ int deinit_player (void);
 
 int8_t allocate_pcm_chunk_memory (pcm_chunk_message_t **pcmChunk,
                                   size_t bytes);
-int8_t insert_pcm_chunk (wire_chunk_message_t *pcmChunk);
+int8_t insert_pcm_chunk (pcm_chunk_message_t *pcmChunk);
 
 // int8_t insert_pcm_chunk (wire_chunk_message_t *decodedWireChunk);
 int8_t free_pcm_chunk (pcm_chunk_message_t *pcmChunk);

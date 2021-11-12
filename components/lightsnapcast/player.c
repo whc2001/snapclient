@@ -1373,6 +1373,307 @@ next->nextFragment;
  *
  */
 int8_t
+allocate_pcm_chunk_memory_caps (pcm_chunk_message_t *pcmChunk, size_t bytes,
+                                uint32_t caps)
+{
+  size_t largestFreeBlock, freeMem;
+  int ret = -3;
+
+  // we got valid memory for pcm_chunk_message_t
+  // first we try to allocated 32 bit aligned memory for payload
+  // check available memory first so we can decide if we need to fragment the
+  // data
+  freeMem = heap_caps_get_free_size (caps);
+  largestFreeBlock = heap_caps_get_largest_free_block (caps);
+  if ((freeMem >= bytes) && (largestFreeBlock >= bytes))
+    {
+      //      	  ESP_LOGI(
+      //      			  TAG,
+      //      			  "32b f %d b %d", freeMem,
+      //      			  largestFreeBlock);
+
+      pcmChunk->fragment->payload = (char *)heap_caps_malloc (bytes, caps);
+      if (pcmChunk->fragment->payload == NULL)
+        {
+          ESP_LOGE (TAG,
+                    "Failed to allocate IRAM memory for pcm chunk payload");
+
+          //	              free_pcm_chunk (pcmChunk);
+
+          ret = -2;
+        }
+      else
+        {
+          pcmChunk->totalSize = bytes;
+          pcmChunk->fragment->nextFragment = NULL;
+          pcmChunk->fragment->size = bytes;
+
+          ret = 0;
+        }
+    }
+  else
+    {
+      //      	  		  ESP_LOGE (TAG, "couldn't get memory to insert
+      //      chunk of size %d, IRAM freemem: %d blocksize %d", bytes, freeMem,
+      //      largestFreeBlock);
+    }
+
+  return ret;
+}
+
+/**
+ *
+ */
+int8_t
+allocate_pcm_chunk_memory_caps_fragmented (pcm_chunk_message_t *pcmChunk,
+                                           size_t bytes, uint32_t caps)
+{
+  size_t largestFreeBlock, freeMem;
+  int ret = -3;
+
+  // we got valid memory for pcm_chunk_message_t
+  // first we try to allocated 32 bit aligned memory for payload
+  // check available memory first so we can decide if we need to fragment the
+  // data
+  freeMem = heap_caps_get_free_size (caps);
+  largestFreeBlock = heap_caps_get_largest_free_block (caps);
+  if (freeMem >= bytes)
+    {
+      //      	  ESP_LOGI(
+      //      			  TAG,
+      //      			  "32b f %d b %d", freeMem,
+      //      			  largestFreeBlock);
+
+      if (largestFreeBlock >= bytes)
+        {
+          pcmChunk->fragment->payload = (char *)heap_caps_malloc (bytes, caps);
+          if (pcmChunk->fragment->payload == NULL)
+            {
+              ESP_LOGE (
+                  TAG, "Failed to allocate IRAM memory for pcm chunk payload");
+
+              //	           free_pcm_chunk (pcmChunk);
+
+              ret = -2;
+            }
+          else
+            {
+              pcmChunk->totalSize = bytes;
+              pcmChunk->fragment->nextFragment = NULL;
+              pcmChunk->fragment->size = bytes;
+
+              ret = 0;
+            }
+        }
+      else
+        {
+          size_t remainingBytes = bytes + (largestFreeBlock % 4);
+          size_t needBytes = largestFreeBlock - (largestFreeBlock % 4);
+          pcm_chunk_fragment_t *fragment = pcmChunk->fragment;
+
+          pcmChunk->totalSize = 0;
+
+          while (remainingBytes)
+            {
+              fragment->payload = (char *)heap_caps_malloc (needBytes, caps);
+              if (fragment->payload == NULL)
+                {
+                  ESP_LOGE (TAG,
+                            "Failed to allocate fragmented IRAM memory for "
+                            "pcm chunk payload %d %d %d %d",
+                            needBytes, remainingBytes,
+                            heap_caps_get_free_size (caps),
+                            heap_caps_get_largest_free_block (caps));
+
+                  //	              free_pcm_chunk (pcmChunk);
+
+                  ret = -2;
+
+                  break;
+                }
+              else
+                {
+                  fragment->size = needBytes;
+                  remainingBytes -= needBytes;
+                  pcmChunk->totalSize += needBytes;
+
+                  if (remainingBytes > 0)
+                    {
+                      fragment->nextFragment = (pcm_chunk_fragment_t *)calloc (
+                          1, sizeof (pcm_chunk_fragment_t));
+                      if (fragment->nextFragment == NULL)
+                        {
+                          ESP_LOGE (TAG, "Failed to fragmented IRAM memory "
+                                         "for pcm chunk fragment");
+
+                          ret = -2;
+
+                          break;
+                        }
+                      else
+                        {
+                          fragment = fragment->nextFragment;
+                          largestFreeBlock
+                              = heap_caps_get_largest_free_block (caps);
+                          if (largestFreeBlock >= remainingBytes)
+                            {
+                              needBytes = remainingBytes;
+                            }
+                          else
+                            {
+                              needBytes
+                                  = largestFreeBlock - (largestFreeBlock % 4);
+                            }
+                        }
+                    }
+                  else
+                    {
+                      ret = 0;
+                    }
+                }
+            }
+        }
+    }
+  else
+    {
+      //	  		  ESP_LOGE (TAG, "couldn't get memory to insert
+      // chunk of size %d, IRAM freemem: %d blocksize %d",
+      //	  		  	    		  decodedWireChunk->size,
+      // freeMem, largestFreeBlock);
+    }
+
+  return ret;
+}
+
+/**
+ *
+ */
+int8_t
+allocate_pcm_chunk_memory_IRAM_fragmented (pcm_chunk_message_t *pcmChunk,
+                                           size_t bytes)
+{
+  size_t largestFreeBlock, freeMem;
+  int ret = -3;
+
+  // we got valid memory for pcm_chunk_message_t
+  // first we try to allocated 32 bit aligned memory for payload
+  // check available memory first so we can decide if we need to fragment the
+  // data
+  freeMem = heap_caps_get_free_size (MALLOC_CAP_32BIT | MALLOC_CAP_EXEC);
+  largestFreeBlock
+      = heap_caps_get_largest_free_block (MALLOC_CAP_32BIT | MALLOC_CAP_EXEC);
+  if (freeMem >= bytes)
+    {
+      //      	  ESP_LOGI(
+      //      			  TAG,
+      //      			  "32b f %d b %d", freeMem,
+      //      			  largestFreeBlock);
+
+      if (largestFreeBlock >= bytes)
+        {
+          pcmChunk->fragment->payload = (char *)heap_caps_malloc (
+              bytes, MALLOC_CAP_32BIT | MALLOC_CAP_EXEC);
+          if (pcmChunk->fragment->payload == NULL)
+            {
+              ESP_LOGE (
+                  TAG, "Failed to allocate IRAM memory for pcm chunk payload");
+
+              //	              free_pcm_chunk (pcmChunk);
+
+              ret = -2;
+            }
+          else
+            {
+              pcmChunk->totalSize = bytes;
+              pcmChunk->fragment->nextFragment = NULL;
+              pcmChunk->fragment->size = bytes;
+
+              ret = 0;
+            }
+        }
+      else
+        {
+          size_t remainingBytes = bytes + (largestFreeBlock % 4);
+          size_t needBytes = largestFreeBlock - (largestFreeBlock % 4);
+          pcm_chunk_fragment_t *fragment = pcmChunk->fragment;
+
+          pcmChunk->totalSize = 0;
+
+          while (remainingBytes)
+            {
+              fragment->payload = (char *)heap_caps_malloc (
+                  needBytes, MALLOC_CAP_32BIT | MALLOC_CAP_EXEC);
+              if (fragment->payload == NULL)
+                {
+                  ESP_LOGE (TAG,
+                            "Failed to allocate fragmented IRAM memory for "
+                            "pcm chunk payload %d %d %d",
+                            needBytes, largestFreeBlock, remainingBytes);
+
+                  //	              free_pcm_chunk (pcmChunk);
+
+                  ret = -2;
+
+                  break;
+                }
+              else
+                {
+                  fragment->size = needBytes;
+                  remainingBytes -= needBytes;
+                  pcmChunk->totalSize += needBytes;
+
+                  if (remainingBytes > 0)
+                    {
+                      fragment->nextFragment = (pcm_chunk_fragment_t *)calloc (
+                          1, sizeof (pcm_chunk_fragment_t));
+                      if (fragment->nextFragment == NULL)
+                        {
+                          ESP_LOGE (TAG, "Failed to fragmented IRAM memory "
+                                         "for pcm chunk fragment");
+
+                          ret = -2;
+
+                          break;
+                        }
+                      else
+                        {
+                          fragment = fragment->nextFragment;
+                          largestFreeBlock = heap_caps_get_largest_free_block (
+                              MALLOC_CAP_32BIT | MALLOC_CAP_EXEC);
+                          if (largestFreeBlock >= remainingBytes)
+                            {
+                              needBytes = remainingBytes;
+                            }
+                          else
+                            {
+                              needBytes
+                                  = largestFreeBlock - (largestFreeBlock % 4);
+                            }
+                        }
+                    }
+                  else
+                    {
+                      ret = 0;
+                    }
+                }
+            }
+        }
+    }
+  else
+    {
+      //	  		  ESP_LOGE (TAG, "couldn't get memory to insert
+      // chunk of size %d, IRAM freemem: %d blocksize %d",
+      //	  		  	    		  decodedWireChunk->size,
+      // freeMem, largestFreeBlock);
+    }
+
+  return ret;
+}
+
+/**
+ *
+ */
+int8_t
 allocate_pcm_chunk_memory_IRAM (pcm_chunk_message_t *pcmChunk, size_t bytes)
 {
   size_t largestFreeBlock, freeMem;
@@ -1405,10 +1706,135 @@ allocate_pcm_chunk_memory_IRAM (pcm_chunk_message_t *pcmChunk, size_t bytes)
         }
       else
         {
+          pcmChunk->totalSize = bytes;
           pcmChunk->fragment->nextFragment = NULL;
           pcmChunk->fragment->size = bytes;
 
           ret = 0;
+        }
+    }
+  else
+    {
+      //	  		  ESP_LOGE (TAG, "couldn't get memory to insert
+      // chunk of size %d, IRAM freemem: %d blocksize %d",
+      //	  		  	    		  decodedWireChunk->size,
+      // freeMem, largestFreeBlock);
+    }
+
+  return ret;
+}
+
+/**
+ *
+ */
+int8_t
+allocate_pcm_chunk_memory_DRAM_fragmented (pcm_chunk_message_t *pcmChunk,
+                                           size_t bytes)
+{
+  size_t largestFreeBlock, freeMem;
+  int ret = -3;
+
+  // we got valid memory for pcm_chunk_message_t
+  // first we try to allocated 32 bit aligned memory for payload
+  // check available memory first so we can decide if we need to fragment the
+  // data
+  freeMem = heap_caps_get_free_size (MALLOC_CAP_8BIT);
+  largestFreeBlock = heap_caps_get_largest_free_block (MALLOC_CAP_8BIT);
+  if (freeMem >= bytes)
+    {
+      //      	  ESP_LOGI(
+      //      			  TAG,
+      //      			  "32b f %d b %d", freeMem,
+      //      			  largestFreeBlock);
+
+      if (largestFreeBlock >= bytes)
+        {
+          pcmChunk->fragment->payload
+              = (char *)heap_caps_malloc (bytes, MALLOC_CAP_8BIT);
+          if (pcmChunk->fragment->payload == NULL)
+            {
+              ESP_LOGE (
+                  TAG, "Failed to allocate IRAM memory for pcm chunk payload");
+
+              //	              free_pcm_chunk (pcmChunk);
+
+              ret = -2;
+            }
+          else
+            {
+              pcmChunk->totalSize = bytes;
+              pcmChunk->fragment->nextFragment = NULL;
+              pcmChunk->fragment->size = bytes;
+
+              ret = 0;
+            }
+        }
+      else
+        {
+          size_t remainingBytes = bytes + (largestFreeBlock % 4);
+          size_t needBytes = largestFreeBlock - (largestFreeBlock % 4);
+          pcm_chunk_fragment_t *fragment = pcmChunk->fragment;
+
+          pcmChunk->totalSize = 0;
+
+          while (remainingBytes)
+            {
+              fragment->payload
+                  = (char *)heap_caps_malloc (needBytes, MALLOC_CAP_8BIT);
+              if (fragment->payload == NULL)
+                {
+                  ESP_LOGE (TAG,
+                            "Failed to allocate fragmented IRAM memory for "
+                            "pcm chunk payload %d %d %d",
+                            needBytes, largestFreeBlock, remainingBytes);
+
+                  //	              free_pcm_chunk (pcmChunk);
+
+                  ret = -2;
+
+                  break;
+                }
+              else
+                {
+                  fragment->size = needBytes;
+                  remainingBytes -= needBytes;
+                  pcmChunk->totalSize += needBytes;
+
+                  if (remainingBytes > 0)
+                    {
+                      fragment->nextFragment = (pcm_chunk_fragment_t *)calloc (
+                          1, sizeof (pcm_chunk_fragment_t));
+                      if (fragment->nextFragment == NULL)
+                        {
+                          ESP_LOGE (TAG, "Failed to fragmented IRAM memory "
+                                         "for pcm chunk fragment");
+
+                          ret = -2;
+
+                          break;
+                        }
+                      else
+                        {
+                          fragment = fragment->nextFragment;
+                          largestFreeBlock = heap_caps_get_largest_free_block (
+                              MALLOC_CAP_8BIT);
+                          if (largestFreeBlock >= remainingBytes)
+                            {
+                              needBytes = remainingBytes;
+                            }
+                          else
+                            {
+                              needBytes
+                                  = largestFreeBlock - (largestFreeBlock % 4);
+                            }
+                        }
+                    }
+                  else
+                    {
+                      ret = 0;
+                    }
+                }
+            }
         }
     }
   else
@@ -1457,6 +1883,7 @@ allocate_pcm_chunk_memory_DRAM (pcm_chunk_message_t *pcmChunk, size_t bytes)
         }
       else
         {
+          pcmChunk->totalSize = bytes;
           pcmChunk->fragment->nextFragment = NULL;
           pcmChunk->fragment->size = bytes;
 
@@ -1523,11 +1950,33 @@ allocate_pcm_chunk_memory (pcm_chunk_message_t **pcmChunk, size_t bytes)
       ret = 0;
     }
 #else
-  ret = allocate_pcm_chunk_memory_IRAM (*pcmChunk, bytes);
+  ret = allocate_pcm_chunk_memory_caps (*pcmChunk, bytes,
+                                        MALLOC_CAP_32BIT | MALLOC_CAP_EXEC);
   if (ret < 0)
     {
-      ret = allocate_pcm_chunk_memory_DRAM (*pcmChunk, bytes);
+      ret = allocate_pcm_chunk_memory_caps (*pcmChunk, bytes, MALLOC_CAP_8BIT);
+      if (ret < 0)
+        {
+          //		  ret = allocate_pcm_chunk_memory_caps_fragmented
+          //(*pcmChunk, bytes, MALLOC_CAP_32BIT | MALLOC_CAP_EXEC);
+          if (ret < 0)
+            {
+              // allocate_pcm_chunk_memory_caps_fragmented (*pcmChunk, bytes,
+              // MALLOC_CAP_8BIT);
+            }
+        }
     }
+//  ret = allocate_pcm_chunk_memory_IRAM (*pcmChunk, bytes);
+//  if (ret < 0) {
+//      ret = allocate_pcm_chunk_memory_DRAM (*pcmChunk, bytes);
+//      if (ret < 0) {
+//    	  ret = allocate_pcm_chunk_memory_IRAM_fragmented (*pcmChunk, bytes);
+//    	  if (ret < 0) {
+//    		  //allocate_pcm_chunk_memory_DRAM_fragmented (*pcmChunk,
+//    bytes);
+//    	  }
+//      }
+//    }
 #endif
 
   if (ret < 0)
@@ -1554,7 +2003,7 @@ allocate_pcm_chunk_memory (pcm_chunk_message_t **pcmChunk, size_t bytes)
 }
 
 int8_t
-insert_pcm_chunk (wire_chunk_message_t *pcmChunk)
+insert_pcm_chunk (pcm_chunk_message_t *pcmChunk)
 {
   if (pcmChunk == NULL)
     {
@@ -2408,43 +2857,52 @@ player_task (void *pvParameters)
                   adjust_apll (dir);
                 }
 
-              //              int64_t t;
-              //              get_diff_to_server (&t);
-              //
-              //                            struct timeval now;
-              //                            // get current time
-              //                            if (gettimeofday (&now, NULL))
-              //              			  {
-              //                          	  ESP_LOGE (TAG, "Failed to get
-              //                          time of day");
-              //              			  }
-              //
-              //                            // for getting rssi value
-              //                            wifi_ap_record_t ap;
-              //                            esp_wifi_sta_get_ap_info(&ap);
-              //
-              //                                ESP_LOGI (TAG, "%ld.%ld, rssi:
-              //                                %d, %d, %lldus, %lldus %lldus,
-              //                                %d, %d, %d, %d, %d",
-              //                                now.tv_sec, now.tv_usec,
-              //                                ap.rssi,
-              //                              		   dir, age, avg, t,
-              //                              heap_caps_get_free_size
-              //                              (MALLOC_CAP_8BIT),
-              //                              heap_caps_get_largest_free_block
-              //                              (MALLOC_CAP_8BIT),
-              //                              uxQueueMessagesWaiting
-              //                              (pcmChkQHdl),
-              //              							heap_caps_get_free_size
-              //              (MALLOC_CAP_32BIT | MALLOC_CAP_EXEC),
-              //               heap_caps_get_largest_free_block
-              //               (MALLOC_CAP_32BIT | MALLOC_CAP_EXEC));
+              // clang-format off
+//              int64_t t;
+//                            get_diff_to_server (&t);
+//
+//                                          struct timeval now;
+//                                          // get current time
+//                                          if (gettimeofday (&now, NULL))
+//                            			  {
+//                                        	  ESP_LOGE (TAG, "Failed to get time of day");
+//                            			  }
+//
+//                                          // for getting rssi value
+//                                          wifi_ap_record_t ap;
+//                                          esp_wifi_sta_get_ap_info(&ap);
+//
+//                                          ESP_LOGI (TAG, "%ld.%ld, rssi: %d, %d, %lldus, %lldus %lldus,%d, %d, %d, %d, %d", now.tv_sec, now.tv_usec,
+//                                              ap.rssi,
+//                                            		   dir, age, avg, t,
+//                                            heap_caps_get_free_size
+//                                            (MALLOC_CAP_8BIT),
+//                                            heap_caps_get_largest_free_block
+//                                            (MALLOC_CAP_8BIT),
+//                                            uxQueueMessagesWaiting
+//                                            (pcmChkQHdl),
+//                            							heap_caps_get_free_size
+//                            (MALLOC_CAP_32BIT | MALLOC_CAP_EXEC),
+//                             heap_caps_get_largest_free_block
+//                             (MALLOC_CAP_32BIT | MALLOC_CAP_EXEC));
+
+//              ESP_LOGI (TAG, "%d, %lldus ,%d, %d, %d, %d, %d",
+//                                                         		   dir, avg,
+//                                                         heap_caps_get_free_size
+//                                                         (MALLOC_CAP_8BIT),
+//                                                         heap_caps_get_largest_free_block
+//                                                         (MALLOC_CAP_8BIT),
+//                                                         uxQueueMessagesWaiting
+//                                                         (pcmChkQHdl),
+//                                         							heap_caps_get_free_size
+//                                         (MALLOC_CAP_32BIT | MALLOC_CAP_EXEC),
+//                                          heap_caps_get_largest_free_block
+//                                          (MALLOC_CAP_32BIT | MALLOC_CAP_EXEC));
 
               // ESP_LOGI (TAG, "%d, %lldus, %lldus %lldus", dir, age, avg, t);
 
-              //				ESP_LOGI (TAG, "%d %lldus, %d",
-              // dir, avg, 				uxQueueMessagesWaiting
-              // (pcmChkQHdl));
+			 // ESP_LOGI (TAG, "%d %lldus, %d", dir, avg, uxQueueMessagesWaiting(pcmChkQHdl));
+              // clang-format on
 
               fragment = chnk->fragment;
               p_payload = fragment->payload;
@@ -2476,7 +2934,9 @@ player_task (void *pvParameters)
                           p_payload = fragment->payload;
                           size = fragment->size;
 
-                          ESP_LOGI (TAG, "i2s_playback_task: fragmented");
+                          //                          ESP_LOGI (TAG,
+                          //                          "i2s_playback_task:
+                          //                          fragmented");
                         }
                       else
                         {
