@@ -5,6 +5,8 @@
 cmake_minimum_required(VERSION 3.5)
 
 file(GLOB srcs "flac/src/libFLAC/*.c")
+list(FILTER srcs EXCLUDE REGEX ".*ogg.*\\.c$")
+list(FILTER srcs EXCLUDE REGEX "windows_unicode_filenames\\.c$")
 
 #project(FLAC VERSION 1.3.3) # HOMEPAGE_URL "https://www.xiph.org/flac/")
 set(VERSION "1.3.3")
@@ -12,8 +14,8 @@ set(PACKAGE_VERSION "1.3.3")
 
 idf_component_register(SRCS "${srcs}"
                        INCLUDE_DIRS .
-                       				"flac/include"
-					   PRIV_INCLUDE_DIRS "flac/src/libFLAC/include/"
+                       "flac/include"
+                       PRIV_INCLUDE_DIRS "flac/src/libFLAC/include/"
 		      )
 
 #set_source_files_properties(opus/silk/quant_LTP_gains.c PROPERTIES COMPILE_FLAGS -Wno-maybe-uninitialized)
