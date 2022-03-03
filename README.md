@@ -2,6 +2,8 @@
 
 ### Synchronous Multiroom audio streaming client for [Snapcast](https://github.com/badaix/snapcast) ported to ESP32
 
+Note: master branch is currently broken, please switch to NETCONN.
+
 ## Feature list
 - Opus, FLAC and PCM decoding currently supported
 - Wifi setup from menuconfig or through espressif Android App "SoftAP Prov"
