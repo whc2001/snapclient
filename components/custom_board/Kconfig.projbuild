@@ -10,6 +10,9 @@ menu "Custom Audio Board"
         config DAC_PCM51XX
             bool "TI PCM51XX/TAS57XX based DAC"
 
+        config DAC_PCM5102A
+            bool "TI PCM5102A based DAC"
+
         config DAC_MA120
             bool "Infineon MA120 ClassD AMP"
 
@@ -133,5 +136,16 @@ menu "Custom Audio Board"
              help
                  GPIO number low if clip observed
      endmenu
+
+     menu "TI PCM5102A interface Configuration"
+        depends on DAC_PCM5102A
+
+        config PCM5102A_MUTE_PIN
+            int "Master mute/unmute for PCM5102A"
+            default 18
+            help
+                GPIO number to control mute/unmute.
+                This is labeled "X(S)MT" on chip/boards
+    endmenu
 
 endmenu

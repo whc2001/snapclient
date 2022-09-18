@@ -16,6 +16,12 @@ if(CONFIG_AUDIO_BOARD_CUSTOM)
 	list(APPEND COMPONENT_SRCS ./pcm51xx/pcm51xx.c)
   endif()
 
+  if(CONFIG_DAC_PCM5102A)
+	message(STATUS "Selected DAC is " CONFIG_DAC_PCM5102A)
+	list(APPEND COMPONENT_ADD_INCLUDEDIRS ./pcm5102a/include)
+	list(APPEND COMPONENT_SRCS ./pcm5102a/pcm5102a.c)
+  endif()
+
   if(CONFIG_DAC_MA120X0)
 	message(STATUS "Selected DAC is " CONFIG_DAC_MA120X0)
 	list(APPEND COMPONENT_ADD_INCLUDEDIRS ./ma120x0/include)
