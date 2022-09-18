@@ -14,7 +14,7 @@ repos:
   rev: v1.1.1
   hooks:
   - id: clang-format
-    args: [-i, --style=GNU]
+    args: [-i, --style=Google]
 #    args: [-i, --style=Google]
 #  - id: clang-tidy
 #    args: [-checks=clang-diagnostic-return-type]
