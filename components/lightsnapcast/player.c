@@ -27,8 +27,10 @@
 
 #include "i2s.h"  // use custom i2s driver instead of IDF version
 
-#define SYNC_TASK_PRIORITY (configMAX_PRIORITIES - 1)
-#define SYNC_TASK_CORE_ID 1  // tskNO_AFFINITY
+#include <math.h>
+
+#define SYNC_TASK_PRIORITY 10             //(configMAX_PRIORITIES - 1)
+#define SYNC_TASK_CORE_ID tskNO_AFFINITY  // 1  // tskNO_AFFINITY
 
 static const char *TAG = "PLAYER";
 
@@ -2250,32 +2252,38 @@ static void player_task(void *pvParameters) {
 
           adjust_apll(0);  // reset to normal playback speed
 
-          fragment = chnk->fragment;
-          p_payload = fragment->payload;
-          size = fragment->size;
-
-          i2s_custom_init_dma_tx_queues(I2S_NUM_0, (uint8_t *)p_payload, size,
-                                        &written);
-          size -= written;
-          p_payload += written;
-
-          //          ESP_LOGE(TAG, "wrote %d", written);
-
-          if (size == 0) {
-            if (fragment->nextFragment != NULL) {
-              fragment = fragment->nextFragment;
-              p_payload = fragment->payload;
-              size = fragment->size;
-            } else {
-              free_pcm_chunk(chnk);
-              chnk = NULL;
+          uint32_t currentDescriptor = 0, currentDescriptorOffset = 0;
+          uint32_t tmpCnt = CHNK_CTRL_CNT;
+          while (tmpCnt) {
+            if (chnk == NULL) {
+              if (pcmChkQHdl != NULL) {
+                ret = xQueueReceive(pcmChkQHdl, &chnk, portMAX_DELAY);
+              }
             }
-          }
 
-          //                TCP_STATS_DISPLAY();
-          //				  IP_STATS_DISPLAY();
-          //				  MEM_STATS_DISPLAY();
-          //				  LINK_STATS_DISPLAY();
+            fragment = chnk->fragment;
+            p_payload = fragment->payload;
+            size = fragment->size;
+
+            i2s_custom_init_dma_tx_queues(I2S_NUM_0, (uint8_t *)p_payload, size,
+                                          &written, &currentDescriptor,
+                                          &currentDescriptorOffset);
+            size -= written;
+            p_payload += written;
+
+            if (size == 0) {
+              if (fragment->nextFragment != NULL) {
+                fragment = fragment->nextFragment;
+                p_payload = fragment->payload;
+                size = fragment->size;
+              } else {
+                free_pcm_chunk(chnk);
+                chnk = NULL;
+              }
+            }
+
+            tmpCnt--;
+          }
 
           // Wait to be notified of a timer interrupt.
           xTaskNotifyWait(pdFALSE,         // Don't clear bits on entry.
@@ -2340,6 +2348,19 @@ static void player_task(void *pvParameters) {
           chnk = NULL;
         }
 
+        // get count of chunks we are late for
+        uint32_t c = ceil((float)age / (float)chkDur_us);  // round up
+        // now clear all those chunks which are probably late too
+        while (c--) {
+          ret = xQueueReceive(pcmChkQHdl, &chnk, pdMS_TO_TICKS(1));
+          if (ret == pdPASS) {
+            free_pcm_chunk(chnk);
+            chnk = NULL;
+          } else {
+            break;
+          }
+        }
+
         int64_t t;
         get_diff_to_server(&t);
 
@@ -2383,10 +2404,12 @@ static void player_task(void *pvParameters) {
           //                  if ((avg < -hardResyncThreshold)
           //                      || (avg > hardResyncThreshold) ||
           //                      (initialSync == 0))
-          if ((initialSync == 0) || (uxQueueMessagesWaiting(pcmChkQHdl) ==
-                                     0))  // only resync if we are getting late.
-                                          // hopefully being early will get ok
-                                          // through apll speed control
+
+          // only resync if we are getting late.
+          // hopefully being early will get ok
+          // through apll speed control
+          if ((initialSync == 0) || (uxQueueMessagesWaiting(pcmChkQHdl) == 0) ||
+              (avg > hardResyncThreshold))
           // if ((avg > hardResyncThreshold) || (initialSync == 0))
           // // only resync if we are getting late. hopefully being
           // early will get ok through apll speed control
@@ -2394,6 +2417,19 @@ static void player_task(void *pvParameters) {
             if (chnk != NULL) {
               free_pcm_chunk(chnk);
               chnk = NULL;
+            }
+
+            // get count of chunks we are late for
+            uint32_t c = ceil((float)age / (float)chkDur_us);  // round up
+            // now clear all those chunks which are probably late too
+            while (c--) {
+              ret = xQueueReceive(pcmChkQHdl, &chnk, pdMS_TO_TICKS(1));
+              if (ret == pdPASS) {
+                free_pcm_chunk(chnk);
+                chnk = NULL;
+              } else {
+                break;
+              }
             }
 
             int64_t t;
@@ -2428,8 +2464,8 @@ static void player_task(void *pvParameters) {
         }
 
         // clang-format off
-//              int64_t t;
-//                            get_diff_to_server (&t);
+        int64_t t;
+        get_diff_to_server (&t);
 //
 //                                          struct timeval now;
 //                                          // get current time
@@ -2469,7 +2505,7 @@ static void player_task(void *pvParameters) {
 //                                          heap_caps_get_largest_free_block
 //                                          (MALLOC_CAP_32BIT | MALLOC_CAP_EXEC));
 
-              // ESP_LOGI (TAG, "%d, %lldus, %lldus %lldus", dir, age, avg, t);
+//               ESP_LOGI (TAG, "%d, %lldus, %lldus %lldus", dir, age, avg, t);
 
 
 			 // ESP_LOGI (TAG, "%d %lldus, %d", dir, avg, uxQueueMessagesWaiting(pcmChkQHdl));

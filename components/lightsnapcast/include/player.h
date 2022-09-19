@@ -9,7 +9,9 @@
 
 #define I2S_PORT I2S_NUM_0
 
-#define CHNK_CTRL_CNT 3
+#define CHNK_CTRL_CNT \
+  3  // TODO: maybe calculate this dynamically based on chunk duration and
+     // buffer size?!
 
 #define LATENCY_MEDIAN_FILTER_LEN 29  // 99
 
