@@ -51,6 +51,8 @@
 #include "player.h"
 #include "snapcast.h"
 
+#include "wifi_logger.h"
+
 static FLAC__StreamDecoderReadStatus read_callback(
     const FLAC__StreamDecoder *decoder, FLAC__byte buffer[], size_t *bytes,
     void *client_data);
@@ -69,23 +71,28 @@ static void error_callback(const FLAC__StreamDecoder *decoder,
 static FLAC__StreamDecoder *flacDecoder = NULL;
 static QueueHandle_t decoderReadQHdl = NULL;
 static QueueHandle_t decoderWriteQHdl = NULL;
+static QueueHandle_t flacTaskQHdl = NULL;
 SemaphoreHandle_t decoderReadSemaphore = NULL;
 SemaphoreHandle_t decoderWriteSemaphore = NULL;
 
 const char *VERSION_STRING = "0.0.2";
 
-#define HTTP_TASK_PRIORITY 6
+#define HTTP_TASK_PRIORITY 8
 #define HTTP_TASK_CORE_ID tskNO_AFFINITY  // 1  // tskNO_AFFINITY
 
 #define OTA_TASK_PRIORITY 6
 #define OTA_TASK_CORE_ID tskNO_AFFINITY  // 1  // tskNO_AFFINITY
 
-#define FLAC_TASK_PRIORITY 8
+#define FLAC_DECODER_TASK_PRIORITY 7
+#define FLAC_DECODER_TASK_CORE_ID tskNO_AFFINITY  // 1  // tskNO_AFFINITY
+
+#define FLAC_TASK_PRIORITY 7
 #define FLAC_TASK_CORE_ID tskNO_AFFINITY  // 1  // tskNO_AFFINITY
 
 xTaskHandle t_ota_task = NULL;
 xTaskHandle t_http_get_task = NULL;
 xTaskHandle t_flac_decoder_task = NULL;
+xTaskHandle t_flac_task = NULL;
 
 struct timeval tdif, tavg;
 static audio_board_handle_t board_handle = NULL;
@@ -113,6 +120,7 @@ uint8_t dspFlow = dspfStereo;  // dspfBiamp; // dspfStereo; // dspfBassBoost;
 
 typedef struct flacData_s {
   char *inData;
+  tv_t timestamp;
   pcm_chunk_message_t *outData;
   uint32_t bytes;
 } flacData_t;
@@ -297,32 +305,34 @@ static FLAC__StreamDecoderWriteStatus write_callback(
   if (ret == 0) {
     pcm_chunk_fragment_t *fragment = flacData->outData->fragment;
 
-    fragmentCnt = 0;
+    if (fragment->payload != NULL) {
+      fragmentCnt = 0;
 
-    for (i = 0; i < frame->header.blocksize; i++) {
-      // write little endian
-      // flacData->outData[4 * i] = (uint8_t)buffer[0][i];
-      // flacData->outData[4 * i + 1] = (uint8_t) (buffer[0][i] >> 8);
-      // flacData->outData[4 * i + 2] = (uint8_t)buffer[1][i];
-      // flacData->outData[4 * i + 3] = (uint8_t)(buffer[1][i] >> 8);
+      for (i = 0; i < frame->header.blocksize; i++) {
+        // write little endian
+        // flacData->outData[4 * i] = (uint8_t)buffer[0][i];
+        // flacData->outData[4 * i + 1] = (uint8_t) (buffer[0][i] >> 8);
+        // flacData->outData[4 * i + 2] = (uint8_t)buffer[1][i];
+        // flacData->outData[4 * i + 3] = (uint8_t)(buffer[1][i] >> 8);
 
-      // TODO: for now fragmented payload is not supported and the whole
-      // chunk is expected to be in the first fragment
-      tmpData = ((uint32_t)((buffer[0][i] >> 8) & 0xFF) << 24) |
-                ((uint32_t)((buffer[0][i] >> 0) & 0xFF) << 16) |
-                ((uint32_t)((buffer[1][i] >> 8) & 0xFF) << 8) |
-                ((uint32_t)((buffer[1][i] >> 0) & 0xFF) << 0);
+        // TODO: for now fragmented payload is not supported and the whole
+        // chunk is expected to be in the first fragment
+        tmpData = ((uint32_t)((buffer[0][i] >> 8) & 0xFF) << 24) |
+                  ((uint32_t)((buffer[0][i] >> 0) & 0xFF) << 16) |
+                  ((uint32_t)((buffer[1][i] >> 8) & 0xFF) << 8) |
+                  ((uint32_t)((buffer[1][i] >> 0) & 0xFF) << 0);
 
-      if (fragment != NULL) {
-        uint32_t *test = (uint32_t *)(&(fragment->payload[fragmentCnt]));
-        *test = tmpData;
-      }
+        if (fragment != NULL) {
+          uint32_t *test = (uint32_t *)(&(fragment->payload[fragmentCnt]));
+          *test = tmpData;
+        }
 
-      fragmentCnt += 4;
-      if (fragmentCnt >= fragment->size) {
-        fragmentCnt = 0;
+        fragmentCnt += 4;
+        if (fragmentCnt >= fragment->size) {
+          fragmentCnt = 0;
 
-        fragment = fragment->nextFragment;
+          fragment = fragment->nextFragment;
+        }
       }
     }
   } else {
@@ -413,14 +423,101 @@ static void flac_decoder_task(void *pvParameters) {
   if (init_status != FLAC__STREAM_DECODER_INIT_STATUS_OK) {
     ESP_LOGE(TAG, "ERROR: initializing decoder: %s\n",
              FLAC__StreamDecoderInitStatusString[init_status]);
+
     ok = false;
     return;
   }
 
   while (1) {
+    ESP_LOGI(TAG, "test");
+
     FLAC__stream_decoder_process_until_end_of_stream(flacDecoder);
   }
 }
+
+/**
+ *
+ */
+void flac_task(void *pvParameters) {
+  tv_t currentTimestamp;
+  flacData_t *pFlacData = NULL;
+  snapcastSetting_t *scSet = (snapcastSetting_t *)pvParameters;
+
+  if (flacTaskQHdl != NULL) {
+    vQueueDelete(flacTaskQHdl);
+    flacTaskQHdl = NULL;
+  }
+
+  flacTaskQHdl = xQueueCreate(128, sizeof(flacData_t *));
+  if (flacTaskQHdl == NULL) {
+    ESP_LOGE(TAG, "Failed to create flac flacTaskQHdl");
+    return;
+  }
+
+  while (1) {
+    xQueueReceive(flacTaskQHdl, &pFlacData,
+                  portMAX_DELAY);  // get data from tcp task
+
+    if (pFlacData != NULL) {
+      currentTimestamp = pFlacData->timestamp;
+
+      ESP_LOGE(TAG, "Got timestamp %lld",
+               (uint64_t)currentTimestamp.sec * 1000000 +
+                   (uint64_t)currentTimestamp.usec);
+
+      xSemaphoreTake(decoderReadSemaphore, portMAX_DELAY);
+
+      // send data to flac decoder
+      xQueueSend(decoderReadQHdl, &pFlacData, portMAX_DELAY);
+      // and wait until data was
+      // processed
+      xSemaphoreTake(decoderReadSemaphore, portMAX_DELAY);
+      // need to release mutex
+      // afterwards for next round
+      xSemaphoreGive(decoderReadSemaphore);
+
+      free(pFlacData);
+    } else {
+      pcm_chunk_message_t *pcmData = NULL;
+
+      xSemaphoreGive(decoderWriteSemaphore);
+      // and wait until it is done
+      xQueueReceive(decoderWriteQHdl, &pFlacData, portMAX_DELAY);
+
+      if (pFlacData->outData != NULL) {
+        pcmData = pFlacData->outData;
+        pcmData->timestamp = currentTimestamp;
+
+        size_t decodedSize = pcmData->totalSize;  // pFlacData->bytes;
+        scSet->chkDur_ms = (1000UL * decodedSize) /
+                           (uint32_t)(scSet->ch * (scSet->bits / 8)) /
+                           scSet->sr;
+        if (player_send_snapcast_setting(scSet) != pdPASS) {
+          ESP_LOGE(TAG,
+                   "Failed to "
+                   "notify "
+                   "sync task "
+                   "about "
+                   "codec. Did you "
+                   "init player?");
+
+          return;
+        }
+
+#if CONFIG_USE_DSP_PROCESSOR
+        dsp_setup_flow(500, scSet.sr, scSet.chkDur_ms);
+        dsp_processor(pcm_chunk_message.payload, pcm_chunk_message.size,
+                      dspFlow);
+#endif
+
+        insert_pcm_chunk(pcmData);
+      }
+    }
+  }
+}
+
+#define FAST_SYNC_LATENCY_BUF 10000      // in µs
+#define NORMAL_SYNC_LATENCY_BUF 1000000  // in µs
 
 /**
  *
@@ -453,7 +550,7 @@ static void http_get_task(void *pvParameters) {
   OpusDecoder *opusDecoder = NULL;
   codec_type_t codec = NONE;
   snapcastSetting_t scSet;
-  flacData_t flacData = {NULL, NULL, 0};
+  flacData_t flacData = {NULL, {0, 0}, NULL, 0};
   flacData_t *pFlacData;
   pcm_chunk_message_t *pcmData = NULL;
   char *typedMsg = NULL;
@@ -466,7 +563,7 @@ static void http_get_task(void *pvParameters) {
   struct netbuf *firstNetBuf = NULL;
   struct netbuf *newNetBuf = NULL;
   uint16_t len;
-  uint64_t timeout = 100000;
+  uint64_t timeout = FAST_SYNC_LATENCY_BUF;
 
   // create a timer to send time sync messages every x µs
   esp_timer_create(&tSyncArgs, &timeSyncMessageTimer);
@@ -481,32 +578,30 @@ static void http_get_task(void *pvParameters) {
 #endif
 
   while (1) {
+    received_header = false;
+
     if (reset_latency_buffer() < 0) {
       ESP_LOGE(TAG,
                "reset_diff_buffer: couldn't reset median filter long. STOP");
-
-      timeout = 100000;
-
-      esp_timer_stop(timeSyncMessageTimer);
-      if (received_header == true) {
-        if (!esp_timer_is_active(timeSyncMessageTimer)) {
-          esp_timer_start_periodic(timeSyncMessageTimer, timeout);
-        }
-
-        if ((latency_buffer_full() > 0) && (timeout < 1000000)) {
-          if (esp_timer_is_active(timeSyncMessageTimer)) {
-            esp_timer_stop(timeSyncMessageTimer);
-          }
-
-          esp_timer_start_periodic(timeSyncMessageTimer, timeout);
-        }
-      }
-
       return;
     }
 
+    timeout = FAST_SYNC_LATENCY_BUF;
+
     esp_timer_stop(timeSyncMessageTimer);
-    //    xSemaphoreGive(timeSyncSemaphoreHandle);
+    if (received_header == true) {
+      if (!esp_timer_is_active(timeSyncMessageTimer)) {
+        esp_timer_start_periodic(timeSyncMessageTimer, timeout);
+      }
+
+      if ((latency_buffer_full() > 0) && (timeout < NORMAL_SYNC_LATENCY_BUF)) {
+        if (esp_timer_is_active(timeSyncMessageTimer)) {
+          esp_timer_stop(timeSyncMessageTimer);
+        }
+
+        esp_timer_start_periodic(timeSyncMessageTimer, timeout);
+      }
+    }
 
     if (opusDecoder != NULL) {
       opus_decoder_destroy(opusDecoder);
@@ -516,6 +611,11 @@ static void http_get_task(void *pvParameters) {
     if (t_flac_decoder_task != NULL) {
       vTaskDelete(t_flac_decoder_task);
       t_flac_decoder_task = NULL;
+    }
+
+    if (t_flac_task != NULL) {
+      vTaskDelete(t_flac_task);
+      t_flac_task = NULL;
     }
 
     if (flacDecoder != NULL) {
@@ -532,6 +632,11 @@ static void http_get_task(void *pvParameters) {
     if (decoderReadQHdl != NULL) {
       vQueueDelete(decoderReadQHdl);
       decoderReadQHdl = NULL;
+    }
+
+    if (flacTaskQHdl != NULL) {
+      vQueueDelete(flacTaskQHdl);
+      flacTaskQHdl = NULL;
     }
 
 #if SNAPCAST_SERVER_USE_MDNS
@@ -630,8 +735,6 @@ static void http_get_task(void *pvParameters) {
       return;
     }
 
-    received_header = false;
-
     // init base message
     base_message_rx.type = SNAPCAST_MESSAGE_HELLO;
     base_message_rx.id = 0x0000;
@@ -722,6 +825,8 @@ static void http_get_task(void *pvParameters) {
 
     firstNetBuf = NULL;
 
+#define TEST_DECODER_TASK 0
+
     decoderWriteSemaphore = xSemaphoreCreateMutex();
     xSemaphoreTake(decoderWriteSemaphore, portMAX_DELAY);
 
@@ -771,13 +876,6 @@ static void http_get_task(void *pvParameters) {
             case BASE_MESSAGE_STATE: {
               switch (internalState) {
                 case 0:
-                  result = gettimeofday(&now, NULL);
-                  // ESP_LOGI(TAG, "time of day: %ld %ld",
-                  // now.tv_sec, now.tv_usec);
-                  if (result) {
-                    ESP_LOGW(TAG, "Failed to gettimeofday");
-                  }
-
                   base_message_rx.type = *start & 0xFF;
                   internalState++;
                   break;
@@ -905,6 +1003,11 @@ static void http_get_task(void *pvParameters) {
                 case 25:
                   base_message_rx.size |= (*start & 0xFF) << 24;
                   internalState = 0;
+
+                  result = gettimeofday(&now, NULL);
+                  if (result) {
+                    ESP_LOGW(TAG, "Failed to gettimeofday");
+                  }
 
                   base_message_rx.received.sec = now.tv_sec;
                   base_message_rx.received.usec = now.tv_usec;
@@ -1115,10 +1218,39 @@ static void http_get_task(void *pvParameters) {
                         tmp = len;
                       }
 
+                      // TODO: put the following part which is blocking and
+                      // waiting for decoded data to own task
+                      //      with lower priority than this task. This way
+                      //      snapclient latency measurements won't be stalled
+                      //      and WiFi communication can keep running
+
                       if (received_header == true) {
                         switch (codec) {
                           case FLAC: {
+#if TEST_DECODER_TASK
+                            pFlacData =
+                                (flacData_t *)malloc(sizeof(flacData_t));
+                            pFlacData->bytes = tmp;
+                            pFlacData->timestamp =
+                                wire_chnk.timestamp;  // store timestamp for
+                                                      // later use
+                            pFlacData->inData = start;
+                            pFlacData->outData = NULL;
+
+                            //                            ESP_LOGI(TAG, "send to
+                            //                            queue");
+                            // send data to seperate task which will handle this
+                            xQueueSend(flacTaskQHdl, &pFlacData, portMAX_DELAY);
+                            //                            ESP_LOGI(TAG, "done");
+#else
+
+                            //                            startTime =
+                            //                            esp_timer_get_time();
+
                             flacData.bytes = tmp;
+                            flacData.timestamp =
+                                wire_chnk.timestamp;  // store timestamp for
+                                                      // later use
                             flacData.inData = start;
                             pFlacData = &flacData;
 
@@ -1133,6 +1265,7 @@ static void http_get_task(void *pvParameters) {
                             // need to release mutex
                             // afterwards for next round
                             xSemaphoreGive(decoderReadSemaphore);
+#endif
 
                             break;
                           }
@@ -1285,6 +1418,17 @@ static void http_get_task(void *pvParameters) {
                         if (received_header == true) {
                           switch (codec) {
                             case FLAC: {
+#if TEST_DECODER_TASK
+                              pFlacData = NULL;  // send NULL so we know to wait
+                                                 // for decoded data in task
+                              //                              ESP_LOGI(TAG,
+                              //                              "done sending data
+                              //                              to queue");
+                              xQueueSend(flacTaskQHdl, &pFlacData,
+                                         portMAX_DELAY);
+                              //                              ESP_LOGI(TAG,
+                              //                              "really done");
+#else
                               xSemaphoreGive(decoderWriteSemaphore);
                               // and wait until it is done
                               xQueueReceive(decoderWriteQHdl, &pFlacData,
@@ -1321,7 +1465,18 @@ static void http_get_task(void *pvParameters) {
 
                                 insert_pcm_chunk(pcmData);
                                 pcmData = NULL;
+
+                                //                                endTime =
+                                //                                esp_timer_get_time();
+
+                                //                                ESP_LOGW(TAG,
+                                //                                "flac
+                                //                                duration:
+                                //                                %lldus",
+                                //                                endTime -
+                                //                                startTime);
                               }
+#endif
 
                               break;
                             }
@@ -1609,6 +1764,11 @@ static void http_get_task(void *pvParameters) {
                           t_flac_decoder_task = NULL;
                         }
 
+                        if (t_flac_task != NULL) {
+                          vTaskDelete(t_flac_task);
+                          t_flac_task = NULL;
+                        }
+
                         if (flacDecoder != NULL) {
                           FLAC__stream_decoder_finish(flacDecoder);
                           FLAC__stream_decoder_delete(flacDecoder);
@@ -1625,6 +1785,11 @@ static void http_get_task(void *pvParameters) {
                           decoderReadQHdl = NULL;
                         }
 
+                        if (flacTaskQHdl != NULL) {
+                          vQueueDelete(flacTaskQHdl);
+                          flacTaskQHdl = NULL;
+                        }
+
                         if (codec == OPUS) {
                           ESP_LOGI(TAG, "OPUS not implemented yet");
 
@@ -1633,8 +1798,9 @@ static void http_get_task(void *pvParameters) {
                           if (t_flac_decoder_task == NULL) {
                             xTaskCreatePinnedToCore(
                                 &flac_decoder_task, "flac_decoder_task",
-                                9 * 256, &scSet, FLAC_TASK_PRIORITY,
-                                &t_flac_decoder_task, FLAC_TASK_CORE_ID);
+                                9 * 256, &scSet, FLAC_DECODER_TASK_PRIORITY,
+                                &t_flac_decoder_task,
+                                FLAC_DECODER_TASK_CORE_ID);
                           }
 
                           if (flacData.outData != NULL) {
@@ -1669,6 +1835,14 @@ static void http_get_task(void *pvParameters) {
 
                           ESP_LOGI(TAG, "fLaC sampleformat: %d:%d:%d", scSet.sr,
                                    scSet.bits, scSet.ch);
+#if TEST_DECODER_TASK
+                          if (t_flac_task == NULL) {
+                            xTaskCreatePinnedToCore(
+                                &flac_task, "flac_task", 9 * 256, &scSet,
+                                FLAC_TASK_PRIORITY, &t_flac_task,
+                                FLAC_TASK_CORE_ID);
+                          }
+#endif
                         } else if (codec == PCM) {
                           memcpy(&channels, tmp + 22, sizeof(channels));
                           uint32_t rate;
@@ -1720,7 +1894,7 @@ static void http_get_task(void *pvParameters) {
                         }
 
                         if ((latency_buffer_full() > 0) &&
-                            (timeout < 1000000)) {
+                            (timeout < NORMAL_SYNC_LATENCY_BUF)) {
                           if (esp_timer_is_active(timeSyncMessageTimer)) {
                             esp_timer_stop(timeSyncMessageTimer);
                           }
@@ -2191,7 +2365,7 @@ static void http_get_task(void *pvParameters) {
 
                             reset_latency_buffer();
 
-                            timeout = 100000;
+                            timeout = FAST_SYNC_LATENCY_BUF;
 
                             esp_timer_stop(timeSyncMessageTimer);
                             if (received_header == true) {
@@ -2201,7 +2375,7 @@ static void http_get_task(void *pvParameters) {
                               }
 
                               if ((latency_buffer_full() > 0) &&
-                                  (timeout < 1000000)) {
+                                  (timeout < NORMAL_SYNC_LATENCY_BUF)) {
                                 if (esp_timer_is_active(timeSyncMessageTimer)) {
                                   esp_timer_stop(timeSyncMessageTimer);
                                 }
@@ -2217,7 +2391,8 @@ static void http_get_task(void *pvParameters) {
                                (int64_t)tmpDiffToServer.tv_usec);
                           player_latency_insert(newValue);
 
-                          // ESP_LOGE(TAG, "latency %lld", newValue);
+                          //                           ESP_LOGE(TAG, "latency
+                          //                           %lld", newValue);
 
                           // store current time
                           lastTimeSync.tv_sec = now.tv_sec;
@@ -2268,8 +2443,8 @@ static void http_get_task(void *pvParameters) {
                             }
 
                             if ((latency_buffer_full() > 0) &&
-                                (timeout < 1000000)) {
-                              timeout = 1000000;
+                                (timeout < NORMAL_SYNC_LATENCY_BUF)) {
+                              timeout = NORMAL_SYNC_LATENCY_BUF;
 
                               ESP_LOGI(TAG, "latency buffer full");
 
@@ -2472,6 +2647,8 @@ void app_main(void) {
   // Enable and setup WIFI in station mode and connect to Access point setup in
   // menu config or set up provisioning mode settable in menuconfig
   wifi_init();
+
+  // start_wifi_logger();
 
   // Enable websocket server
   ESP_LOGI(TAG, "Connected to AP");

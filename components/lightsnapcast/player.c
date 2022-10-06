@@ -53,8 +53,8 @@ static sMedianNode_t latencyMedianLongBuffer[LATENCY_MEDIAN_FILTER_LEN];
 
 static int64_t latencyToServer = 0;
 
-static sMedianFilter_t shortMedianFilter;
-static sMedianNode_t shortMedianBuffer[SHORT_BUFFER_LEN];
+// static sMedianFilter_t shortMedianFilter;
+// static sMedianNode_t shortMedianBuffer[SHORT_BUFFER_LEN];
 
 static int8_t currentDir = 0;  //!< current apll direction, see apll_adjust()
 
@@ -318,9 +318,11 @@ int8_t player_latency_insert(int64_t newValue) {
   int64_t medianValue;
 
   medianValue = MEDIANFILTER_Insert(&latencyMedianFilterLong, newValue);
-  if (xSemaphoreTake(latencyBufSemaphoreHandle, pdMS_TO_TICKS(5)) == pdTRUE) {
+  if (xSemaphoreTake(latencyBufSemaphoreHandle, pdMS_TO_TICKS(0)) == pdTRUE) {
     if (MEDIANFILTER_isFull(&latencyMedianFilterLong)) {
       latencyBuffFull = true;
+
+      //      ESP_LOGI(TAG, "latency median: %lld", latencyToServer);
     }
 
     latencyToServer = medianValue;
@@ -1700,7 +1702,14 @@ int8_t allocate_pcm_chunk_memory(pcm_chunk_message_t **pcmChunk, size_t bytes) {
         heap_caps_get_free_size(MALLOC_CAP_32BIT | MALLOC_CAP_EXEC),
         heap_caps_get_largest_free_block(MALLOC_CAP_32BIT | MALLOC_CAP_EXEC));
 
-    free_pcm_chunk(*pcmChunk);
+    // free_pcm_chunk(*pcmChunk);
+
+    (*pcmChunk)->fragment->payload = NULL;
+    (*pcmChunk)->totalSize = bytes;
+    (*pcmChunk)->fragment->nextFragment = NULL;
+    (*pcmChunk)->fragment->size = bytes;
+
+    ret = 0;
   } else {
     // ESP_LOGI (TAG, "got memory for pcm chunk %p %p %d", *pcmChunk,
     // (*pcmChunk)->fragment->payload, bytes);
@@ -2091,13 +2100,14 @@ static void player_task(void *pvParameters) {
 
   initialSync = 0;
 
-  shortMedianFilter.numNodes = SHORT_BUFFER_LEN;
-  shortMedianFilter.medianBuffer = shortMedianBuffer;
-  if (MEDIANFILTER_Init(&shortMedianFilter)) {
-    ESP_LOGE(TAG, "snapcast_sync_task: couldn't init shortMedianFilter. STOP");
-
-    return;
-  }
+  //  shortMedianFilter.numNodes = SHORT_BUFFER_LEN;
+  //  shortMedianFilter.medianBuffer = shortMedianBuffer;
+  //  if (MEDIANFILTER_Init(&shortMedianFilter)) {
+  //    ESP_LOGE(TAG, "snapcast_sync_task: couldn't init shortMedianFilter.
+  //    STOP");
+  //
+  //    return;
+  //  }
 
   while (1) {
     //	  ESP_LOGW(
@@ -2242,13 +2252,13 @@ static void player_task(void *pvParameters) {
 
           i2s_custom_stop(I2S_NUM_0);
 
-          if (MEDIANFILTER_Init(&shortMedianFilter)) {
-            ESP_LOGE(TAG,
-                     "snapcast_sync_task: couldn't init "
-                     "shortMedianFilter. STOP");
-
-            return;
-          }
+          //          if (MEDIANFILTER_Init(&shortMedianFilter)) {
+          //            ESP_LOGE(TAG,
+          //                     "snapcast_sync_task: couldn't init "
+          //                     "shortMedianFilter. STOP");
+          //
+          //            return;
+          //          }
 
           adjust_apll(0);  // reset to normal playback speed
 
@@ -2386,20 +2396,25 @@ static void player_task(void *pvParameters) {
         continue;
       }
 
-      const uint8_t enableControlLoop = 1;
+      const bool enableControlLoop = true;
       const int64_t age_expect =
           -chkDur_us *
           CHNK_CTRL_CNT;  // this value is highly coupled with I2S DMA buffer
                           // size. DMA buffer has a size of 1 chunk (e.g. 20ms)
                           // so next chunk we get from queue will be -20ms
-      const int64_t maxOffset = 25;               //µs, softsync 1
+      const int64_t maxOffset = 250;  // 25;               //µs, softsync 1
       const int64_t hardResyncThreshold = 10000;  //µs, hard sync
 
       if (initialSync == 1) {
-        avg = MEDIANFILTER_Insert(&shortMedianFilter, age + (-age_expect));
-        if (MEDIANFILTER_isFull(&shortMedianFilter) == 0) {
+        //        avg = MEDIANFILTER_Insert(&shortMedianFilter, age +
+        //        (-age_expect)); if (MEDIANFILTER_isFull(&shortMedianFilter) ==
+        //        0) {
+        //          avg = age + (-age_expect);
+        //        }
+        //        else
+        {
           avg = age + (-age_expect);
-        } else {
+
           // resync hard if we are off too far
           //                  if ((avg < -hardResyncThreshold)
           //                      || (avg > hardResyncThreshold) ||
@@ -2451,16 +2466,28 @@ static void player_task(void *pvParameters) {
           }
         }
 
-        if (enableControlLoop == 1) {
+        if (enableControlLoop == true) {
+          //          if (avg < -maxOffset) {  // we are early
+          //            dir = -1;
+          //          } else if ((avg >= -maxOffset) && (avg <= maxOffset)) {
+          //            dir = 0;
+          //          } else if (avg > maxOffset) {  // we are late
+          //            dir = 1;
+          //          }
           if (avg < -maxOffset) {  // we are early
             dir = -1;
-          } else if ((avg >= -maxOffset) && (avg <= maxOffset)) {
+          } else if (((dir == -1) && (avg >= 0)) ||
+                     ((dir == 1) && (avg <= 0))) {
             dir = 0;
           } else if (avg > maxOffset) {  // we are late
             dir = 1;
           }
 
+          // uint64_t start =  esp_timer_get_time();
           adjust_apll(dir);
+          // uint64_t end =  esp_timer_get_time();
+
+          // ESP_LOGE (TAG, "adjust_apll took %lldus", end - start);
         }
 
         // clang-format off
@@ -2505,45 +2532,72 @@ static void player_task(void *pvParameters) {
 //                                          heap_caps_get_largest_free_block
 //                                          (MALLOC_CAP_32BIT | MALLOC_CAP_EXEC));
 
-//               ESP_LOGI (TAG, "%d, %lldus, %lldus %lldus", dir, age, avg, t);
+//        static uint32_t tmpcnt = 2500;  // every 60s
+//        if (tmpcnt-- == 0) {
+//            tmpcnt = 2500;
+//            ESP_LOGI (TAG, "%d, %lldus, %lldus %lldus", dir, age, avg, t);
+//        }
 
+//        ESP_LOGI (TAG, "%d, %lldus, %lldus %lldus", dir, age, avg, t);
 
-			 // ESP_LOGI (TAG, "%d %lldus, %d", dir, avg, uxQueueMessagesWaiting(pcmChkQHdl));
+			  ESP_LOGI (TAG, "%d, %lldus, queue: %d, latency: %lldus", dir, avg, uxQueueMessagesWaiting(pcmChkQHdl), t);
         // clang-format on
 
         fragment = chnk->fragment;
         p_payload = fragment->payload;
         size = fragment->size;
 
-        do {
-          written = 0;
-          if (i2s_custom_write(I2S_NUM_0, p_payload, (size_t)size, &written,
-                               portMAX_DELAY) != ESP_OK) {
-            ESP_LOGE(TAG, "i2s_playback_task: I2S write error %d", size);
-          }
-          if (written < size) {
-            ESP_LOGE(TAG, "i2s_playback_task: I2S didn't write all data");
-          }
-          size -= written;
-          p_payload += written;
-
-          if (size == 0) {
-            if (fragment->nextFragment != NULL) {
-              fragment = fragment->nextFragment;
-              p_payload = fragment->payload;
-              size = fragment->size;
-
-              //                          ESP_LOGI (TAG,
-              //                          "i2s_playback_task:
-              //                          fragmented");
-            } else {
-              free_pcm_chunk(chnk);
-              chnk = NULL;
-
-              break;
+        if (p_payload != NULL) {
+          do {
+            written = 0;
+            if (i2s_custom_write(I2S_NUM_0, p_payload, (size_t)size, &written,
+                                 portMAX_DELAY) != ESP_OK) {
+              ESP_LOGE(TAG, "i2s_playback_task: I2S write error %d", size);
             }
-          }
-        } while (1);
+            if (written < size) {
+              ESP_LOGE(TAG, "i2s_playback_task: I2S didn't write all data");
+            }
+            size -= written;
+            p_payload += written;
+
+            if (size == 0) {
+              if (fragment->nextFragment != NULL) {
+                fragment = fragment->nextFragment;
+                p_payload = fragment->payload;
+                size = fragment->size;
+
+                //                          ESP_LOGI (TAG,
+                //                          "i2s_playback_task:
+                //                          fragmented");
+              } else {
+                free_pcm_chunk(chnk);
+                chnk = NULL;
+
+                break;
+              }
+            }
+          } while (1);
+        } else {
+          // here we have an empty fragment because of memory allocation error.
+          // fill DMA with zeros so we don't get out of sync
+          written = 0;
+          const size_t write_size = 4;
+          uint8_t tmpBuf[write_size];
+
+          memset(tmpBuf, 0, sizeof(tmpBuf));
+
+          do {
+            if (i2s_custom_write(I2S_NUM_0, tmpBuf, (size_t)write_size,
+                                 &written, portMAX_DELAY) != ESP_OK) {
+              ESP_LOGE(TAG, "i2s_playback_task: I2S write error %d", size);
+            }
+
+            size -= written;
+          } while (size);
+
+          free_pcm_chunk(chnk);
+          chnk = NULL;
+        }
       }
     } else {
       int64_t t;

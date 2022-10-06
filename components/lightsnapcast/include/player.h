@@ -13,7 +13,7 @@
   3  // TODO: maybe calculate this dynamically based on chunk duration and
      // buffer size?!
 
-#define LATENCY_MEDIAN_FILTER_LEN 29  // 99
+#define LATENCY_MEDIAN_FILTER_LEN 199  // 29  // 99
 
 #define SHORT_BUFFER_LEN 9
 
