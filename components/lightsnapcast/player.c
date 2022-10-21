@@ -29,8 +29,8 @@
 
 #include <math.h>
 
-#define SYNC_TASK_PRIORITY 10             //(configMAX_PRIORITIES - 1)
-#define SYNC_TASK_CORE_ID tskNO_AFFINITY  // 1  // tskNO_AFFINITY
+#define SYNC_TASK_PRIORITY (configMAX_PRIORITIES - 1)
+#define SYNC_TASK_CORE_ID 1  // tskNO_AFFINITY
 
 static const char *TAG = "PLAYER";
 
@@ -38,34 +38,32 @@ static const char *TAG = "PLAYER";
  * @brief Pre define APLL parameters, save compute time. They are calculated in
  * player_setup_i2s() | bits_per_sample | rate | sdm0 | sdm1 | sdm2 | odir
  *
- *        apll_freq = xtal_freq * (4 + sdm2 + sdm1/256 + sdm0/65536)/((o_div +
- * 2) * 2) I2S bit clock is (apll_freq / 16)
+ * apll_freq = xtal_freq * (4 + sdm2 + sdm1/256 + sdm0/65536)/((o_div + 2) * 2)
+ * I2S bit clock is (apll_freq / 16)
  */
 static int apll_normal_predefine[6] = {0, 0, 0, 0, 0, 0};
 static int apll_corr_predefine[][6] = {{0, 0, 0, 0, 0, 0}, {0, 0, 0, 0, 0, 0}};
 
 static SemaphoreHandle_t latencyBufSemaphoreHandle = NULL;
 
-static int8_t latencyBuffFull = 0;
+static bool latencyBuffFull = 0;
 
-static sMedianFilter_t latencyMedianFilterLong;
-static sMedianNode_t latencyMedianLongBuffer[LATENCY_MEDIAN_FILTER_LEN];
+static sMedianFilter_t latencyMedianFilter;
+static sMedianNode_t latencyMedianLong[LATENCY_MEDIAN_FILTER_LEN];
+
+static sMedianFilter_t shortMedianFilter;
+static sMedianNode_t shortMedianBuffer[SHORT_BUFFER_LEN];
+
+static sMedianFilter_t miniMedianFilter;
+static sMedianNode_t miniMedianBuffer[MINI_BUFFER_LEN];
 
 static int64_t latencyToServer = 0;
-
-// static sMedianFilter_t shortMedianFilter;
-// static sMedianNode_t shortMedianBuffer[SHORT_BUFFER_LEN];
 
 static int8_t currentDir = 0;  //!< current apll direction, see apll_adjust()
 
 static QueueHandle_t pcmChkQHdl = NULL;
 
-//#define PCM_CHNK_QUEUE_LENGTH  50 // TODO: one chunk is hardcoded to 20ms,
-// change it to be dynamically adjustable. static StaticQueue_t pcmChunkQueue;
-// static uint8_t pcmChunkQueueStorageArea[PCM_CHNK_QUEUE_LENGTH
-//                                        * sizeof (pcm_chunk_message_t *)];
-
-static TaskHandle_t syncTaskHandle = NULL;
+static TaskHandle_t playerTaskHandle = NULL;
 
 static QueueHandle_t snapcastSettingQueueHandle = NULL;
 
@@ -131,21 +129,24 @@ static esp_err_t player_setup_i2s(i2s_port_t i2sNum,
     ESP_LOGE(TAG, "ERROR, fi2s_clk");
   }
 
+#define UPPER_SR_SCALER 1.0001
+#define LOWER_SR_SCALER 0.9999
+
   apll_corr_predefine[0][0] = setting->bits;
-  apll_corr_predefine[0][1] = setting->sr * 1.001;
+  apll_corr_predefine[0][1] = setting->sr * UPPER_SR_SCALER;
   if (i2s_apll_calculate_fi2s(
-          fi2s_clk * 1.001, setting->bits, &apll_corr_predefine[0][2],
+          fi2s_clk * UPPER_SR_SCALER, setting->bits, &apll_corr_predefine[0][2],
           &apll_corr_predefine[0][3], &apll_corr_predefine[0][4],
           &apll_corr_predefine[0][5]) != ESP_OK) {
-    ESP_LOGE(TAG, "ERROR, fi2s_clk * 1.001");
+    ESP_LOGE(TAG, "ERROR, fi2s_clk * %f", UPPER_SR_SCALER);
   }
   apll_corr_predefine[1][0] = setting->bits;
-  apll_corr_predefine[1][1] = setting->sr * 0.999;
+  apll_corr_predefine[1][1] = setting->sr * LOWER_SR_SCALER;
   if (i2s_apll_calculate_fi2s(
-          fi2s_clk * 0.999, setting->bits, &apll_corr_predefine[1][2],
+          fi2s_clk * LOWER_SR_SCALER, setting->bits, &apll_corr_predefine[1][2],
           &apll_corr_predefine[1][3], &apll_corr_predefine[1][4],
           &apll_corr_predefine[1][5]) != ESP_OK) {
-    ESP_LOGE(TAG, "ERROR, fi2s_clk * 0.999");
+    ESP_LOGE(TAG, "ERROR, fi2s_clk * %f", LOWER_SR_SCALER);
   }
 
   ESP_LOGI(TAG, "player_setup_i2s: dma_buf_len is %d, dma_buf_count is %d",
@@ -211,10 +212,10 @@ int deinit_player(void) {
   int ret = 0;
 
   // stop the task
-  if (syncTaskHandle == NULL) {
+  if (playerTaskHandle == NULL) {
     ESP_LOGW(TAG, "no sync task created?");
   } else {
-    vTaskDelete(syncTaskHandle);
+    vTaskDelete(playerTaskHandle);
   }
 
   if (snapcastSettingsMux != NULL) {
@@ -271,17 +272,25 @@ int init_player(void) {
   }
 
   // init diff buff median filter
-  latencyMedianFilterLong.numNodes = LATENCY_MEDIAN_FILTER_LEN;
-  latencyMedianFilterLong.medianBuffer = latencyMedianLongBuffer;
+  latencyMedianFilter.numNodes = LATENCY_MEDIAN_FILTER_LEN;
+  latencyMedianFilter.medianBuffer = latencyMedianLong;
   reset_latency_buffer();
+
+  shortMedianFilter.numNodes = SHORT_BUFFER_LEN;
+  shortMedianFilter.medianBuffer = shortMedianBuffer;
+  MEDIANFILTER_Init(&shortMedianFilter);
+
+  miniMedianFilter.numNodes = MINI_BUFFER_LEN;
+  miniMedianFilter.medianBuffer = miniMedianBuffer;
+  MEDIANFILTER_Init(&miniMedianFilter);
 
   tg0_timer_init();
 
-  if (syncTaskHandle == NULL) {
+  if (playerTaskHandle == NULL) {
     ESP_LOGI(TAG, "Start player_task");
 
     xTaskCreatePinnedToCore(player_task, "player", 2048 + 512, NULL,
-                            SYNC_TASK_PRIORITY, &syncTaskHandle,
+                            SYNC_TASK_PRIORITY, &playerTaskHandle,
                             SYNC_TASK_CORE_ID);
   }
 
@@ -314,15 +323,15 @@ int8_t player_get_snapcast_settings(snapcastSetting_t *setting) {
   return ret;
 }
 
-int8_t player_latency_insert(int64_t newValue) {
+int32_t player_latency_insert(int64_t newValue) {
   int64_t medianValue;
 
-  medianValue = MEDIANFILTER_Insert(&latencyMedianFilterLong, newValue);
+  medianValue = MEDIANFILTER_Insert(&latencyMedianFilter, newValue);
   if (xSemaphoreTake(latencyBufSemaphoreHandle, pdMS_TO_TICKS(0)) == pdTRUE) {
-    if (MEDIANFILTER_isFull(&latencyMedianFilterLong)) {
+    if (MEDIANFILTER_isFull(&latencyMedianFilter)) {
       latencyBuffFull = true;
 
-      //      ESP_LOGI(TAG, "latency median: %lld", latencyToServer);
+      // ESP_LOGI(TAG, "latency median: %lldus", latencyToServer);
     }
 
     latencyToServer = medianValue;
@@ -338,12 +347,12 @@ int8_t player_latency_insert(int64_t newValue) {
 /**
  *
  */
-int8_t player_send_snapcast_setting(snapcastSetting_t *setting) {
+int32_t player_send_snapcast_setting(snapcastSetting_t *setting) {
   int ret;
   snapcastSetting_t curSet;
   uint8_t settingChanged = 1;
 
-  if ((syncTaskHandle == NULL) || (snapcastSettingQueueHandle == NULL)) {
+  if ((playerTaskHandle == NULL) || (snapcastSettingQueueHandle == NULL)) {
     return pdFAIL;
   }
 
@@ -394,9 +403,9 @@ int8_t player_send_snapcast_setting(snapcastSetting_t *setting) {
 /**
  *
  */
-int8_t reset_latency_buffer(void) {
+int32_t reset_latency_buffer(void) {
   // init diff buff median filter
-  if (MEDIANFILTER_Init(&latencyMedianFilterLong) < 0) {
+  if (MEDIANFILTER_Init(&latencyMedianFilter) < 0) {
     ESP_LOGE(TAG, "reset_diff_buffer: couldn't init median filter long. STOP");
 
     return -2;
@@ -425,8 +434,10 @@ int8_t reset_latency_buffer(void) {
 /**
  *
  */
-int8_t latency_buffer_full(void) {
-  int8_t tmp;
+int32_t latency_buffer_full(bool *is_full, TickType_t wait) {
+  if (!is_full) {
+    return -3;
+  }
 
   if (latencyBufSemaphoreHandle == NULL) {
     ESP_LOGE(TAG, "latency_buffer_full: latencyBufSemaphoreHandle == NULL");
@@ -434,23 +445,23 @@ int8_t latency_buffer_full(void) {
     return -2;
   }
 
-  if (xSemaphoreTake(latencyBufSemaphoreHandle, 0) == pdFALSE) {
+  if (xSemaphoreTake(latencyBufSemaphoreHandle, wait) == pdFALSE) {
     ESP_LOGW(TAG, "latency_buffer_full: can't take semaphore");
 
     return -1;
   }
 
-  tmp = latencyBuffFull;
+  *is_full = latencyBuffFull;
 
   xSemaphoreGive(latencyBufSemaphoreHandle);
 
-  return tmp;
+  return 0;
 }
 
 /**
  *
  */
-int8_t get_diff_to_server(int64_t *tDiff) {
+int32_t get_diff_to_server(int64_t *tDiff) {
   static int64_t lastDiff = 0;
 
   if (latencyBufSemaphoreHandle == NULL) {
@@ -480,16 +491,14 @@ int8_t get_diff_to_server(int64_t *tDiff) {
 /**
  *
  */
-int8_t server_now(int64_t *sNow) {
-  struct timeval now;
-  int64_t diff;
+int32_t server_now(int64_t *sNow, int64_t *diff2Server) {
+  int64_t diff, now;
 
-  // get current time
-  if (gettimeofday(&now, NULL)) {
-    ESP_LOGE(TAG, "server_now: Failed to get time of day");
-
-    return -1;
+  if (sNow == NULL) {
+    return -2;
   }
+
+  now = esp_timer_get_time();
 
   if (get_diff_to_server(&diff) == -1) {
     ESP_LOGW(TAG,
@@ -502,10 +511,14 @@ int8_t server_now(int64_t *sNow) {
     return -1;
   }
 
-  *sNow = ((int64_t)now.tv_sec * 1000000LL + (int64_t)now.tv_usec) + diff;
+  *sNow = now + diff;
 
-  //	ESP_LOGI(TAG, "now: %lldus", (int64_t)now.tv_sec * 1000000LL +
-  //(int64_t)now.tv_usec); 	ESP_LOGI(TAG, "diff: %lldus", diff);
+  if (diff2Server) {
+    *diff2Server = diff;
+  }
+
+  // ESP_LOGI(TAG, "now: %lldus", now);
+  // ESP_LOGI(TAG, "diff: %lldus", diff);
   // ESP_LOGI(TAG, "serverNow: %lldus", *snow);
 
   return 0;
@@ -521,31 +534,41 @@ int8_t server_now(int64_t *sNow) {
  * ESP_INTR_FLAG_IRAM flag and use the normal API.
  */
 void IRAM_ATTR timer_group0_isr(void *para) {
-  timer_spinlock_take(TIMER_GROUP_0);
+  timer_spinlock_take(TIMER_GROUP_1);
 
   BaseType_t xHigherPriorityTaskWoken = pdFALSE;
 
   // Retrieve the interrupt status and the counter value
   //   from the timer that reported the interrupt
-  uint32_t timer_intr = timer_group_get_intr_status_in_isr(TIMER_GROUP_0);
+  uint32_t timer_intr = timer_group_get_intr_status_in_isr(TIMER_GROUP_1);
 
   // Clear the interrupt
   //   and update the alarm time for the timer with without reload
   if (timer_intr & TIMER_INTR_T1) {
-    timer_group_clr_intr_status_in_isr(TIMER_GROUP_0, TIMER_1);
+    timer_group_clr_intr_status_in_isr(TIMER_GROUP_1, TIMER_1);
+
+    uint64_t timer_counter_value =
+        timer_group_get_counter_value_in_isr(TIMER_GROUP_1, TIMER_1);
+
+    //    TIMERG0.hw_timer[TIMER_1].cnt_high = 0;
+    //    TIMERG0.hw_timer[TIMER_1].cnt_low = 0;
+
+    //    timer_group_set_alarm_value_in_isr(TIMER_GROUP_1, TIMER_1, 24000);
+    // timer_group_enable_alarm_in_isr(TIMER_GROUP_1, TIMER_1);
 
     // Notify the task in the task's notification value.
-    xTaskNotifyFromISR(syncTaskHandle, 0, eNoAction, &xHigherPriorityTaskWoken);
+    xTaskNotifyFromISR(playerTaskHandle, (uint32_t)timer_counter_value,
+                       eSetValueWithOverwrite, &xHigherPriorityTaskWoken);
   }
 
-  timer_spinlock_give(TIMER_GROUP_0);
+  timer_spinlock_give(TIMER_GROUP_1);
 
   if (xHigherPriorityTaskWoken) {
     portYIELD_FROM_ISR();
   }
 }
 
-static void tg0_timer_deinit(void) { timer_deinit(TIMER_GROUP_0, TIMER_1); }
+static void tg0_timer_deinit(void) { timer_deinit(TIMER_GROUP_1, TIMER_1); }
 
 /*
  *
@@ -554,18 +577,18 @@ static void tg0_timer_init(void) {
   // Select and initialize basic parameters of the timer
   timer_config_t config = {
       //.divider = 8,		// 100ns ticks
-      .divider = 80,  // 1µs ticks
+      .divider = 80,  // 80,  // 1µs ticks
       .counter_dir = TIMER_COUNT_UP,
       .counter_en = TIMER_PAUSE,
       .alarm_en = TIMER_ALARM_EN,
       .auto_reload = TIMER_AUTORELOAD_DIS,
   };  // default clock source is APB
-  timer_init(TIMER_GROUP_0, TIMER_1, &config);
+  timer_init(TIMER_GROUP_1, TIMER_1, &config);
 
   // Configure the alarm value and the interrupt on alarm.
-  timer_set_alarm_value(TIMER_GROUP_0, TIMER_1, 0);
-  timer_enable_intr(TIMER_GROUP_0, TIMER_1);
-  if (timer_isr_register(TIMER_GROUP_0, TIMER_1, timer_group0_isr, NULL,
+  // timer_set_alarm_value(TIMER_GROUP_1, TIMER_1, 0);
+  timer_enable_intr(TIMER_GROUP_1, TIMER_1);
+  if (timer_isr_register(TIMER_GROUP_1, TIMER_1, timer_group0_isr, NULL,
                          ESP_INTR_FLAG_IRAM | ESP_INTR_FLAG_LEVEL3,
                          NULL) != ESP_OK) {
     ESP_LOGE(TAG, "unable to register timer 1 callback");
@@ -576,13 +599,13 @@ static void tg0_timer_init(void) {
  *
  */
 static void tg0_timer1_start(uint64_t alarm_value) {
-  timer_pause(TIMER_GROUP_0, TIMER_1);
-  timer_set_counter_value(TIMER_GROUP_0, TIMER_1, 0);
-  timer_set_alarm_value(TIMER_GROUP_0, TIMER_1, alarm_value);
-  timer_set_alarm(TIMER_GROUP_0, TIMER_1, TIMER_ALARM_EN);
-  timer_start(TIMER_GROUP_0, TIMER_1);
+  timer_pause(TIMER_GROUP_1, TIMER_1);
+  timer_set_alarm_value(TIMER_GROUP_1, TIMER_1, alarm_value);
+  timer_set_counter_value(TIMER_GROUP_1, TIMER_1, 0);
+  timer_set_alarm(TIMER_GROUP_1, TIMER_1, TIMER_ALARM_EN);
+  timer_start(TIMER_GROUP_1, TIMER_1);
 
-  //    ESP_LOGI(TAG, "started age timer");
+  // ESP_LOGI(TAG, "started age timer");
 }
 
 // void rtc_clk_apll_enable(bool enable, uint32_t sdm0, uint32_t sdm1, uint32_t
@@ -1197,8 +1220,8 @@ next->nextFragment;
 /**
  *
  */
-int8_t allocate_pcm_chunk_memory_caps(pcm_chunk_message_t *pcmChunk,
-                                      size_t bytes, uint32_t caps) {
+int32_t allocate_pcm_chunk_memory_caps(pcm_chunk_message_t *pcmChunk,
+                                       size_t bytes, uint32_t caps) {
   size_t largestFreeBlock, freeMem;
   int ret = -3;
 
@@ -1240,8 +1263,8 @@ int8_t allocate_pcm_chunk_memory_caps(pcm_chunk_message_t *pcmChunk,
 /**
  *
  */
-int8_t allocate_pcm_chunk_memory_caps_fragmented(pcm_chunk_message_t *pcmChunk,
-                                                 size_t bytes, uint32_t caps) {
+int32_t allocate_pcm_chunk_memory_caps_fragmented(pcm_chunk_message_t *pcmChunk,
+                                                  size_t bytes, uint32_t caps) {
   size_t largestFreeBlock, freeMem;
   int ret = -3;
 
@@ -1624,8 +1647,8 @@ int8_t allocate_pcm_chunk_memory_DRAM(pcm_chunk_message_t *pcmChunk,
   return ret;
 }
 
-int8_t allocate_pcm_chunk_memory(pcm_chunk_message_t **pcmChunk, size_t bytes) {
-  size_t largestFreeBlock, freeMem;
+int32_t allocate_pcm_chunk_memory(pcm_chunk_message_t **pcmChunk,
+                                  size_t bytes) {
   int ret = -3;
 
   *pcmChunk = (pcm_chunk_message_t *)calloc(1, sizeof(pcm_chunk_message_t));
@@ -1649,14 +1672,10 @@ int8_t allocate_pcm_chunk_memory(pcm_chunk_message_t **pcmChunk, size_t bytes) {
   (*pcmChunk)->fragment->payload =
       (char *)heap_caps_malloc(bytes, MALLOC_CAP_8BIT | MALLOC_CAP_SPIRAM);
   if ((*pcmChunk)->fragment->payload == NULL) {
-    //	      ESP_LOGE (TAG,
-    //	                "Failed to allocate memory for pcm chunk
-    // fragment payload");
-
-    //	      free_pcm_chunk (pcmChunk);
-
-    //      freeMem = heap_caps_get_free_size (MALLOC_CAP_8BIT |
-    //      MALLOC_CAP_SPIRAM);
+    //  size_t largestFreeBlock, freeMem;
+    //	ESP_LOGE (TAG, "Failed to allocate memory for pcm chunk fragment
+    // payload"); 	free_pcm_chunk (pcmChunk);
+    //  freeMem = heap_caps_get_free_size (MALLOC_CAP_8BIT | MALLOC_CAP_SPIRAM);
 
     ret = -2;
   } else {
@@ -1718,7 +1737,7 @@ int8_t allocate_pcm_chunk_memory(pcm_chunk_message_t **pcmChunk, size_t bytes) {
   return ret;
 }
 
-int8_t insert_pcm_chunk(pcm_chunk_message_t *pcmChunk) {
+int32_t insert_pcm_chunk(pcm_chunk_message_t *pcmChunk) {
   if (pcmChunk == NULL) {
     ESP_LOGE(TAG, "Parameter Error");
 
@@ -1731,7 +1750,15 @@ int8_t insert_pcm_chunk(pcm_chunk_message_t *pcmChunk) {
     return -2;
   }
 
-  if (xQueueSendToBack(pcmChkQHdl, &pcmChunk, pdMS_TO_TICKS(1000)) != pdTRUE) {
+  if (uxQueueSpacesAvailable(pcmChkQHdl) == 0) {
+    pcm_chunk_message_t *element;
+
+    xQueueReceive(pcmChkQHdl, &element, portMAX_DELAY);
+
+    free_pcm_chunk(element);
+  }
+
+  if (xQueueSend(pcmChkQHdl, &pcmChunk, pdMS_TO_TICKS(10)) != pdTRUE) {
     ESP_LOGW(TAG, "send: pcmChunkQueue full, messages waiting %d",
              uxQueueMessagesWaiting(pcmChkQHdl));
 
@@ -2080,7 +2107,6 @@ static void player_task(void *pvParameters) {
   snapcastSetting_t scSet;
   uint8_t scSetChgd = 0;
   uint64_t timer_val;
-  const int32_t alarmValSub = 0;
   int initialSync = 0;
   int64_t avg = 0;
   int dir = 0;
@@ -2088,8 +2114,13 @@ static void player_task(void *pvParameters) {
   pcm_chunk_fragment_t *fragment = NULL;
   size_t written;
   bool gotSnapserverConfig = false;
-  int64_t clientDacLatency_us = 0;
-  uint8_t sendResyncMSg = 0;
+  int64_t clientDacLatency_us;
+  int64_t diff2Server;
+  int64_t age_filtered = 0;
+  float alpha = 0.1;
+  TickType_t previousWakeTime = xTaskGetTickCount();
+
+  memset(&scSet, 0, sizeof(snapcastSetting_t));
 
   ESP_LOGI(TAG, "started sync task");
 
@@ -2100,37 +2131,29 @@ static void player_task(void *pvParameters) {
 
   initialSync = 0;
 
-  //  shortMedianFilter.numNodes = SHORT_BUFFER_LEN;
-  //  shortMedianFilter.medianBuffer = shortMedianBuffer;
-  //  if (MEDIANFILTER_Init(&shortMedianFilter)) {
-  //    ESP_LOGE(TAG, "snapcast_sync_task: couldn't init shortMedianFilter.
-  //    STOP");
-  //
-  //    return;
-  //  }
-
   while (1) {
-    //	  ESP_LOGW(
-    //			  TAG,
-    //			  "32b f %d b %d", heap_caps_get_free_size
+    // ESP_LOGW( TAG, "32b f %d b %d", heap_caps_get_free_size
     //(MALLOC_CAP_8BIT), heap_caps_get_largest_free_block (MALLOC_CAP_8BIT));
-    //	  ESP_LOGW (TAG, "stack free: %d",
-    // uxTaskGetStackHighWaterMark(NULL));
+    // ESP_LOGW (TAG, "stack free: %d", uxTaskGetStackHighWaterMark(NULL));
 
     // check if we got changed setting available, if so we need to
     // reinitialize
     ret = xQueueReceive(snapcastSettingQueueHandle, &scSetChgd, 0);
     if (ret == pdTRUE) {
-      player_get_snapcast_settings(&scSet);
+      snapcastSetting_t __scSet;
 
-      buf_us = (int64_t)(scSet.buf_ms) * 1000LL;
+      player_get_snapcast_settings(&__scSet);
 
-      chkDur_us = (int64_t)(scSet.chkDur_ms) * 1000LL;
+      buf_us = (int64_t)(__scSet.buf_ms) * 1000LL;
+
+      chkDur_us = (int64_t)(__scSet.chkDur_ms) * 1000LL;
       chkInBytes =
-          (scSet.chkDur_ms * scSet.sr * scSet.ch * (scSet.bits / 8)) / 1000;
-      clientDacLatency_us = (int64_t)scSet.cDacLat_ms * 1000LL;
+          (__scSet.chkDur_ms * __scSet.sr * __scSet.ch * (__scSet.bits / 8)) /
+          1000;
+      clientDacLatency_us = (int64_t)__scSet.cDacLat_ms * 1000;
 
-      if ((scSet.sr > 0) && (scSet.bits) > 0 && (scSet.ch > 0)) {
+      if ((scSet.sr != __scSet.sr) || (scSet.bits != __scSet.bits) ||
+          (scSet.ch != __scSet.ch)) {
         i2s_custom_stop(I2S_NUM_0);
 
         ret = player_setup_i2s(I2S_NUM_0, &currentSnapcastSetting);
@@ -2144,28 +2167,34 @@ static void player_task(void *pvParameters) {
         currentDir = 1;
         adjust_apll(0);
 
-        i2s_custom_set_clk(I2S_NUM_0, scSet.sr, scSet.bits, scSet.ch);
+        i2s_custom_set_clk(I2S_NUM_0, __scSet.sr, __scSet.bits, __scSet.ch);
         initialSync = 0;
       }
 
-      if ((scSet.buf_ms > 0) && (scSet.chkDur_ms > 0)) {
-        // create snapcast receive buffer
-        if (pcmChkQHdl != NULL) {
-          destroy_pcm_queue(&pcmChkQHdl);
+      if ((__scSet.buf_ms > 0) && (__scSet.chkDur_ms > 0)) {
+        if ((__scSet.buf_ms != scSet.buf_ms) ||
+            (__scSet.chkDur_ms != scSet.chkDur_ms)) {
+          if (pcmChkQHdl != NULL) {
+            destroy_pcm_queue(&pcmChkQHdl);
+          }
         }
 
-        // round up
-        int entries = ((float)scSet.buf_ms / (float)scSet.chkDur_ms) + 0.5;
-        pcmChkQHdl = xQueueCreate(entries, sizeof(pcm_chunk_message_t *));
+        if (pcmChkQHdl == NULL) {
+          int entries = ceil((float)__scSet.buf_ms / (float)__scSet.chkDur_ms);
 
-        ESP_LOGI(TAG, "created new queue with %d", entries);
+          pcmChkQHdl = xQueueCreate(entries, sizeof(pcm_chunk_message_t *));
+
+          ESP_LOGI(TAG, "created new queue with %d", entries);
+        }
       }
 
       ESP_LOGI(TAG,
                "snapserver config changed, buffer %dms, chunk %dms, "
                "sample rate %d, ch %d, bits %d mute %d latency %d",
-               scSet.buf_ms, scSet.chkDur_ms, scSet.sr, scSet.ch, scSet.bits,
-               scSet.muted, scSet.cDacLat_ms);
+               __scSet.buf_ms, __scSet.chkDur_ms, __scSet.sr, __scSet.ch,
+               __scSet.bits, __scSet.muted, __scSet.cDacLat_ms);
+
+      scSet = __scSet;  // store for next round
 
       gotSnapserverConfig = true;
     } else if (gotSnapserverConfig == false) {
@@ -2174,13 +2203,40 @@ static void player_task(void *pvParameters) {
       continue;
     }
 
+    // wait for early time syncs to be ready
+    bool is_full = false;
+    int tmp = latency_buffer_full(&is_full, pdMS_TO_TICKS(1));
+    if (tmp < 0) {
+      continue;
+    } else {
+      if (is_full == false) {
+        vTaskDelay(pdMS_TO_TICKS(10));
+
+        // ESP_LOGW(TAG, "diff buffer not full");
+
+        continue;
+      }
+    }
+
     if (chnk == NULL) {
       if (pcmChkQHdl != NULL) {
+        //        if (initialSync == 1) {
+        //          //vTaskDelayUntil(&previousWakeTime, pdMS_TO_TICKS(chkDur_us
+        //          / 1000));
+        //
+        //          // Wait to be notified of a timer interrupt.
+        //          xTaskNotifyWait(pdFALSE,         // Don't clear bits on
+        //          entry.
+        //                          pdFALSE,         // Don't clear bits on
+        //                          exit. &notifiedValue,  // Stores the
+        //                          notified value. portMAX_DELAY);
+        //
+        //          timer_set_alarm(TIMER_GROUP_1, TIMER_1, TIMER_ALARM_EN);
+        //        }
+
         ret = xQueueReceive(pcmChkQHdl, &chnk, pdMS_TO_TICKS(2000));
       } else {
-        //              ESP_LOGE (TAG,
-        //                        "Couldn't get PCM chunk, pcm queue not
-        //                        created");
+        // ESP_LOGE (TAG, "Couldn't get PCM chunk, pcm queue not created");
 
         vTaskDelay(pdMS_TO_TICKS(100));
 
@@ -2188,22 +2244,21 @@ static void player_task(void *pvParameters) {
       }
 
       if (ret != pdFAIL) {
-        //				ESP_LOGW(TAG, "got pcm chunk");
+        // ESP_LOGW(TAG, "got pcm chunk");
       }
     } else {
-      //			ESP_LOGW(TAG, "already retrieved chunk needs
-      // service");
+      // ESP_LOGW(TAG, "already retrieved chunk needs service");
       ret = pdPASS;
     }
 
     if (ret != pdFAIL) {
-      if (server_now(&serverNow) >= 0) {
-        age = serverNow -
-              ((int64_t)chnk->timestamp.sec * 1000000LL +
-               (int64_t)chnk->timestamp.usec) -
-              (int64_t)buf_us + (int64_t)clientDacLatency_us;
+      if (server_now(&serverNow, &diff2Server) >= 0) {
+        int64_t chunkStart = (int64_t)chnk->timestamp.sec * 1000000LL +
+                             (int64_t)chnk->timestamp.usec;
+
+        age = serverNow - chunkStart - buf_us + clientDacLatency_us;
       } else {
-        //               ESP_LOGW(TAG, "couldn't get server now");
+        // ESP_LOGW(TAG, "couldn't get server now");
 
         if (chnk != NULL) {
           free_pcm_chunk(chnk);
@@ -2215,50 +2270,22 @@ static void player_task(void *pvParameters) {
         continue;
       }
 
-      // wait for early time syncs to be ready
-      int tmp = latency_buffer_full();
-      if (tmp <= 0) {
-        if (tmp < 0) {
-          vTaskDelay(1);
-
-          continue;
-        }
-
-        if (age >= 0) {
-          if (chnk != NULL) {
-            free_pcm_chunk(chnk);
-            chnk = NULL;
-          }
-        }
-
-        //               ESP_LOGW(TAG, "diff buffer not full");
-
-        vTaskDelay(pdMS_TO_TICKS(10));
-
-        continue;
-      }
-
       if (age < 0) {  // get initial sync using hardware timer
         if (initialSync == 0) {
-          tg0_timer1_start(-age -
-                           alarmValSub);  // alarm a little earlier to account
-                                          // for context switch duration from
-                                          // freeRTOS, timer with 1µs ticks
+          age_filtered = 0;
 
-          //          tg0_timer1_start((-age * 10) - alarmValSub));
-          //          // alarm a
-          // little earlier to account for context switch duration from
-          // freeRTOS, timer with 100ns ticks
+          MEDIANFILTER_Init(&shortMedianFilter);
+          MEDIANFILTER_Init(&miniMedianFilter);
+
+          ESP_LOGI(TAG, "age %lldus", age);
+
+          timer_set_auto_reload(TIMER_GROUP_1, TIMER_1, TIMER_AUTORELOAD_DIS);
+          tg0_timer1_start(-age);  // timer with 1µs ticks
+
+          // tg0_timer1_start(-age * 10);  // timer with 100ns ticks
 
           i2s_custom_stop(I2S_NUM_0);
-
-          //          if (MEDIANFILTER_Init(&shortMedianFilter)) {
-          //            ESP_LOGE(TAG,
-          //                     "snapcast_sync_task: couldn't init "
-          //                     "shortMedianFilter. STOP");
-          //
-          //            return;
-          //          }
+          i2s_custom_zero_dma_buffer(I2S_NUM_0);
 
           adjust_apll(0);  // reset to normal playback speed
 
@@ -2295,24 +2322,35 @@ static void player_task(void *pvParameters) {
             tmpCnt--;
           }
 
+          //          xTaskNotifyStateClear(playerTaskHandle);
+
           // Wait to be notified of a timer interrupt.
           xTaskNotifyWait(pdFALSE,         // Don't clear bits on entry.
                           pdFALSE,         // Don't clear bits on exit.
                           &notifiedValue,  // Stores the notified value.
                           portMAX_DELAY);
           // or use simple task delay for this
-          // vTaskDelay( pdMS_TO_TICKS(-age / 1000) );
+          //           vTaskDelay( pdMS_TO_TICKS(-age / 1000) );
+
+          // get timer value so we can get the real age
+          //          timer_get_counter_value(TIMER_GROUP_1, TIMER_1,
+          //          &timer_val);
+          timer_pause(TIMER_GROUP_1, TIMER_1);
+          //          timer_set_counter_value(TIMER_GROUP_1, TIMER_1, 0);
+          //          timer_set_alarm(TIMER_GROUP_1, TIMER_1, TIMER_ALARM_EN);
+          //          timer_set_alarm_value(TIMER_GROUP_1, TIMER_1, chkDur_us);
+          //          timer_set_auto_reload(TIMER_GROUP_1, TIMER_1,
+          //          TIMER_AUTORELOAD_EN); timer_start(TIMER_GROUP_1, TIMER_1);
 
           i2s_custom_start(I2S_NUM_0);
 
-          // get timer value so we can get the real age
-          timer_get_counter_value(TIMER_GROUP_0, TIMER_1, &timer_val);
-          timer_pause(TIMER_GROUP_0, TIMER_1);
+          timer_val = (int64_t)notifiedValue;
 
           // get actual age after alarm
-          //           age = ((int64_t)timer_val - (-age) * 10) / 10;
-          //           // timer with 100ns ticks
-          age = (int64_t)timer_val - (-age);  // timer with 1µs ticks
+          // timer with 100ns ticks
+          // age = ((int32_t)timer_val - (-age) * 10) / 10;
+          // timer with 1µs ticks
+          age = (int64_t)timer_val - (-age);
 
           // check if we need to write remaining data
           if (size != 0) {
@@ -2346,9 +2384,11 @@ static void player_task(void *pvParameters) {
           }
 
           initialSync = 1;
-          sendResyncMSg = 1;
 
-          ESP_LOGI(TAG, "initial sync %lldus", age);
+          //          previousWakeTime = xTaskGetTickCount();
+
+          ESP_LOGI(TAG, "initial sync %lldus, %lldus, %lld", age, chkDur_us,
+                   timer_val);
 
           continue;
         }
@@ -2371,23 +2411,18 @@ static void player_task(void *pvParameters) {
           }
         }
 
-        int64_t t;
-        get_diff_to_server(&t);
-
         wifi_ap_record_t ap;
         esp_wifi_sta_get_ap_info(&ap);
 
-        // if (sendResyncMSg == 1)
-        {
-          sendResyncMSg = 0;
+        timer_pause(TIMER_GROUP_1, TIMER_1);
+        timer_set_auto_reload(TIMER_GROUP_1, TIMER_1, TIMER_AUTORELOAD_DIS);
 
-          ESP_LOGW(TAG,
-                   "RESYNCING HARD 1: age %lldus, latency %lldus, free %d, "
-                   "largest block %d, %d, rssi: %d",
-                   age, t, heap_caps_get_free_size(MALLOC_CAP_32BIT),
-                   heap_caps_get_largest_free_block(MALLOC_CAP_32BIT),
-                   uxQueueMessagesWaiting(pcmChkQHdl), ap.rssi);
-        }
+        ESP_LOGW(TAG,
+                 "RESYNCING HARD 1: age %lldus, latency %lldus, free %d, "
+                 "largest block %d, %d, rssi: %d",
+                 age, diff2Server, heap_caps_get_free_size(MALLOC_CAP_32BIT),
+                 heap_caps_get_largest_free_block(MALLOC_CAP_32BIT),
+                 uxQueueMessagesWaiting(pcmChkQHdl), ap.rssi);
 
         dir = 0;
 
@@ -2397,127 +2432,109 @@ static void player_task(void *pvParameters) {
       }
 
       const bool enableControlLoop = true;
-      const int64_t age_expect =
-          -chkDur_us *
-          CHNK_CTRL_CNT;  // this value is highly coupled with I2S DMA buffer
-                          // size. DMA buffer has a size of 1 chunk (e.g. 20ms)
-                          // so next chunk we get from queue will be -20ms
-      const int64_t maxOffset = 250;  // 25;               //µs, softsync 1
+
+      // this value is highly coupled with I2S DMA buffer
+      // size. DMA buffer has a size of 1 chunk (e.g. 20ms)
+      // so next chunk we get from queue will be -20ms
+      const int64_t age_expect = -chkDur_us * CHNK_CTRL_CNT;
+      const int64_t shortOffset = 100;            //µs, softsync
+      const int64_t miniOffset = 50;              //µs, softsync
       const int64_t hardResyncThreshold = 10000;  //µs, hard sync
 
       if (initialSync == 1) {
-        //        avg = MEDIANFILTER_Insert(&shortMedianFilter, age +
-        //        (-age_expect)); if (MEDIANFILTER_isFull(&shortMedianFilter) ==
-        //        0) {
-        //          avg = age + (-age_expect);
-        //        }
-        //        else
-        {
-          avg = age + (-age_expect);
+        avg = age + (-age_expect);
 
-          // resync hard if we are off too far
-          //                  if ((avg < -hardResyncThreshold)
-          //                      || (avg > hardResyncThreshold) ||
-          //                      (initialSync == 0))
+        int64_t shortMedian, miniMedian;
 
-          // only resync if we are getting late.
-          // hopefully being early will get ok
-          // through apll speed control
-          if ((initialSync == 0) || (uxQueueMessagesWaiting(pcmChkQHdl) == 0) ||
-              (avg > hardResyncThreshold))
-          // if ((avg > hardResyncThreshold) || (initialSync == 0))
-          // // only resync if we are getting late. hopefully being
-          // early will get ok through apll speed control
-          {
-            if (chnk != NULL) {
+        shortMedian = MEDIANFILTER_Insert(&shortMedianFilter, avg);
+        miniMedian = MEDIANFILTER_Insert(&miniMedianFilter, avg);
+
+        //        age_filtered = avg * alpha + (1 - alpha) * age_filtered;
+        //        avg = age_filtered;
+
+        // resync if we are getting late.
+        // hopefully being early will get ok
+        // through apll speed control
+        if ((initialSync == 0) || (uxQueueMessagesWaiting(pcmChkQHdl) == 0) ||
+            (avg > hardResyncThreshold) || (avg < -hardResyncThreshold)) {
+          if (chnk != NULL) {
+            free_pcm_chunk(chnk);
+            chnk = NULL;
+          }
+
+          // get count of chunks we are late for
+          uint32_t c = ceil((float)age / (float)chkDur_us);  // round up
+          // now clear all those chunks which are probably late too
+          while (c--) {
+            ret = xQueueReceive(pcmChkQHdl, &chnk, pdMS_TO_TICKS(1));
+            if (ret == pdPASS) {
               free_pcm_chunk(chnk);
               chnk = NULL;
+            } else {
+              break;
             }
-
-            // get count of chunks we are late for
-            uint32_t c = ceil((float)age / (float)chkDur_us);  // round up
-            // now clear all those chunks which are probably late too
-            while (c--) {
-              ret = xQueueReceive(pcmChkQHdl, &chnk, pdMS_TO_TICKS(1));
-              if (ret == pdPASS) {
-                free_pcm_chunk(chnk);
-                chnk = NULL;
-              } else {
-                break;
-              }
-            }
-
-            int64_t t;
-            get_diff_to_server(&t);
-
-            wifi_ap_record_t ap;
-            esp_wifi_sta_get_ap_info(&ap);
-
-            ESP_LOGW(TAG,
-                     "RESYNCING HARD 2: age %lldus, latency %lldus, free "
-                     "%d, largest block %d, %d, rssi: %d",
-                     avg, t, heap_caps_get_free_size(MALLOC_CAP_32BIT),
-                     heap_caps_get_largest_free_block(MALLOC_CAP_32BIT),
-                     uxQueueMessagesWaiting(pcmChkQHdl), ap.rssi);
-
-            initialSync = 0;
-
-            continue;
           }
+
+          wifi_ap_record_t ap;
+          esp_wifi_sta_get_ap_info(&ap);
+
+          timer_pause(TIMER_GROUP_1, TIMER_1);
+          timer_set_auto_reload(TIMER_GROUP_1, TIMER_1, TIMER_AUTORELOAD_DIS);
+
+          ESP_LOGW(TAG,
+                   "RESYNCING HARD 2: age %lldus, latency %lldus, free "
+                   "%d, largest block %d, %d, rssi: %d",
+                   avg, diff2Server, heap_caps_get_free_size(MALLOC_CAP_32BIT),
+                   heap_caps_get_largest_free_block(MALLOC_CAP_32BIT),
+                   uxQueueMessagesWaiting(pcmChkQHdl), ap.rssi);
+
+          initialSync = 0;
+
+          continue;
         }
 
-        if (enableControlLoop == true) {
+        if ((enableControlLoop == true) &&
+            (MEDIANFILTER_isFull(&shortMedianFilter))) {
+          if ((shortMedian < -shortOffset) && (miniMedian < -miniOffset) &&
+              (avg < -50)) {  // we are early
+            dir = -1;
+          }
+          //          else if (((dir == -1) && (shortMedian >= 0) && (miniMedian
+          //          >= 0) && (avg >= 0)) ||
+          //                     ((dir == 1) && (shortMedian <= 0) &&
+          //                     (miniMedian <= 0) && (avg <= 0))) {
+          //            dir = 0;
+          //          }
+          else if ((shortMedian > shortOffset) && (miniMedian > miniOffset) &&
+                   (avg > 50)) {  // we are late
+            dir = 1;
+          }
+
           //          if (avg < -maxOffset) {  // we are early
           //            dir = -1;
-          //          } else if ((avg >= -maxOffset) && (avg <= maxOffset)) {
+          //          } else if (((dir == -1) && (avg >= 0)) ||
+          //                     ((dir == 1) && (avg <= 0))) {
           //            dir = 0;
           //          } else if (avg > maxOffset) {  // we are late
           //            dir = 1;
           //          }
-          if (avg < -maxOffset) {  // we are early
-            dir = -1;
-          } else if (((dir == -1) && (avg >= 0)) ||
-                     ((dir == 1) && (avg <= 0))) {
-            dir = 0;
-          } else if (avg > maxOffset) {  // we are late
-            dir = 1;
-          }
 
-          // uint64_t start =  esp_timer_get_time();
+          //          if (avg < -maxOffset) { // we are early
+          //            dir = -1;
+          //          }
+          //          else if ((avg >= -maxOffset) && (avg <= maxOffset))
+          //          {
+          //            dir = 0;
+          //          }
+          //          else if (avg > shortOffset)
+          //          { // we are late
+          //            dir = 1;
+          //          }
+
           adjust_apll(dir);
-          // uint64_t end =  esp_timer_get_time();
-
-          // ESP_LOGE (TAG, "adjust_apll took %lldus", end - start);
         }
 
         // clang-format off
-        int64_t t;
-        get_diff_to_server (&t);
-//
-//                                          struct timeval now;
-//                                          // get current time
-//                                          if (gettimeofday (&now, NULL))
-//                            			  {
-//                                        	  ESP_LOGE (TAG, "Failed to get time of day");
-//                            			  }
-//
-//                                          // for getting rssi value
-//                                          wifi_ap_record_t ap;
-//                                          esp_wifi_sta_get_ap_info(&ap);
-//
-//                                          ESP_LOGI (TAG, "%ld.%ld, rssi: %d, %d, %lldus, %lldus %lldus,%d, %d, %d, %d, %d", now.tv_sec, now.tv_usec,
-//                                              ap.rssi,
-//                                            		   dir, age, avg, t,
-//                                            heap_caps_get_free_size
-//                                            (MALLOC_CAP_8BIT),
-//                                            heap_caps_get_largest_free_block
-//                                            (MALLOC_CAP_8BIT),
-//                                            uxQueueMessagesWaiting
-//                                            (pcmChkQHdl),
-//                            							heap_caps_get_free_size
-//                            (MALLOC_CAP_32BIT | MALLOC_CAP_EXEC),
-//                             heap_caps_get_largest_free_block
-//                             (MALLOC_CAP_32BIT | MALLOC_CAP_EXEC));
 
 //              ESP_LOGI (TAG, "%d, %lldus ,%d, %d, %d, %d, %d",
 //                                                         		   dir, avg,
@@ -2532,15 +2549,24 @@ static void player_task(void *pvParameters) {
 //                                          heap_caps_get_largest_free_block
 //                                          (MALLOC_CAP_32BIT | MALLOC_CAP_EXEC));
 
-//        static uint32_t tmpcnt = 2500;  // every 60s
-//        if (tmpcnt-- == 0) {
-//            tmpcnt = 2500;
-//            ESP_LOGI (TAG, "%d, %lldus, %lldus %lldus", dir, age, avg, t);
-//        }
 
-//        ESP_LOGI (TAG, "%d, %lldus, %lldus %lldus", dir, age, avg, t);
+        const uint32_t tmpCntInit = 1; // 250  // every 6s
+        static uint32_t tmpcnt = 1;
+        if (tmpcnt-- == 0) {
+          int64_t sec, msec, usec;
 
-			  ESP_LOGI (TAG, "%d, %lldus, queue: %d, latency: %lldus", dir, avg, uxQueueMessagesWaiting(pcmChkQHdl), t);
+          tmpcnt = tmpCntInit;
+
+          sec = diff2Server / 1000000;
+          usec = diff2Server - sec * 1000000;
+          msec = usec / 1000;
+          usec = usec % 1000;
+//          ESP_LOGI (TAG, "%d, %lldus, %lldus %llds, %lld.%lldms", dir, age, avg, sec, msec, usec);
+          ESP_LOGI (TAG, "%d, %lldus, %lldus, %lldus", dir, avg, shortMedian, miniMedian);
+        }
+
+        dir = 0;
+
         // clang-format on
 
         fragment = chnk->fragment;
@@ -2566,9 +2592,7 @@ static void player_task(void *pvParameters) {
                 p_payload = fragment->payload;
                 size = fragment->size;
 
-                //                          ESP_LOGI (TAG,
-                //                          "i2s_playback_task:
-                //                          fragmented");
+                // ESP_LOGI (TAG, "%s: fragmented", __func__);
               } else {
                 free_pcm_chunk(chnk);
                 chnk = NULL;
@@ -2600,15 +2624,18 @@ static void player_task(void *pvParameters) {
         }
       }
     } else {
-      int64_t t;
+      int64_t sec, msec, usec;
 
-      get_diff_to_server(&t);
+      sec = diff2Server / 1000000;
+      usec = diff2Server - sec * 1000000;
+      msec = usec / 1000;
+      usec = usec % 1000;
 
       if (pcmChkQHdl != NULL) {
         ESP_LOGE(TAG,
                  "Couldn't get PCM chunk, recv: messages waiting %d, "
-                 "latency %lldus",
-                 uxQueueMessagesWaiting(pcmChkQHdl), t);
+                 "diff2Server: %llds, %lld.%lldms",
+                 uxQueueMessagesWaiting(pcmChkQHdl), sec, msec, usec);
       }
 
       dir = 0;

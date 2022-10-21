@@ -338,34 +338,32 @@ esp_err_t i2s_custom_init_dma_tx_queues(i2s_port_t i2s_num, uint8_t *data,
         memcpy(buf, &data[offset], maxDmaBufBytes);
         offset += maxDmaBufBytes;
 
-        //				ESP_LOGW(I2S_TAG, "wrote %d",
-        // maxDmaBufBytes);
+        // ESP_LOGW(I2S_TAG, "wrote %d to desc[%d]", maxDmaBufBytes, i);
 
         tmpSize -= maxDmaBufBytes;
       } else {
         memcpy(buf, &data[offset], tmpSize);
         offset += tmpSize;
 
-        //				ESP_LOGW(I2S_TAG, "wrote %d",
-        // tmpSize);
+        // ESP_LOGW(I2S_TAG, "wrote %d to desc[%d]", tmpSize, i);
 
         tmpSize = 0;
       }
 
       if (tmpSize == 0) {
-        if (currentDescriptor) {
-          *currentDescriptor = i;
-        }
-
-        if (currentDescriptorOffset) {
-          if (offset == size) {
-            *currentDescriptorOffset = 0;
-          } else {
-            *currentDescriptorOffset = offset;
-          }
-        }
-
         break;
+      }
+    }
+
+    if (currentDescriptor) {
+      *currentDescriptor = i + 1;
+    }
+
+    if (currentDescriptorOffset) {
+      if (offset == size) {
+        *currentDescriptorOffset = 0;
+      } else {
+        *currentDescriptorOffset = offset;
       }
     }
 

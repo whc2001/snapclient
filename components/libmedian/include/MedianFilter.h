@@ -36,7 +36,7 @@ typedef struct {
 
 int MEDIANFILTER_Init(sMedianFilter_t *medianFilter);
 int64_t MEDIANFILTER_Insert(sMedianFilter_t *medianFilter, int64_t sample);
-uint8_t MEDIANFILTER_isFull(sMedianFilter_t *medianFilter);
+uint32_t MEDIANFILTER_isFull(sMedianFilter_t *medianFilter);
 
 #ifdef __cplusplus
 }

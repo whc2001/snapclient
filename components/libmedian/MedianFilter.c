@@ -61,8 +61,8 @@ int64_t MEDIANFILTER_Insert(sMedianFilter_t *medianFilter, int64_t sample) {
   }
 
   if ((medianFilter->ageHead == medianFilter->medianHead) ||
-      (medianFilter->ageHead->value >
-       medianFilter->medianHead->value)) {  // prepare for median correction
+      (medianFilter->ageHead->value > medianFilter->medianHead->value)) {
+    // prepare for median correction
     medianFilter->medianHead = medianFilter->medianHead->prevValue;
   }
 
@@ -111,10 +111,10 @@ int64_t MEDIANFILTER_Insert(sMedianFilter_t *medianFilter, int64_t sample) {
 /**
  *
  */
-uint8_t MEDIANFILTER_isFull(sMedianFilter_t *medianFilter) {
-  if (medianFilter->bufferCnt < medianFilter->numNodes) {
-    return 0;
-  } else {
+uint32_t MEDIANFILTER_isFull(sMedianFilter_t *medianFilter) {
+  if (medianFilter->bufferCnt >= medianFilter->numNodes) {
     return 1;
+  } else {
+    return 0;
   }
 }

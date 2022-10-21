@@ -140,7 +140,8 @@ static int id_counter = 0;
  */
 void time_sync_msg_cb(void *args) {
   base_message_t base_message_tx;
-  struct timeval now;
+  //  struct timeval now;
+  int64_t now;
   int result;
   time_message_t time_message_tx = {{0, 0}};
   int rc1 = ERR_OK;
@@ -149,22 +150,25 @@ void time_sync_msg_cb(void *args) {
   // Isn't it called from timer task instead of ISR?
   // xSemaphoreGive(timeSyncSemaphoreHandle);
 
-  result = gettimeofday(&now, NULL);
-  // ESP_LOGI(TAG, "time of day: %ld %ld", now.tv_sec,
-  // now.tv_usec);
-  if (result) {
-    ESP_LOGI(TAG, "Failed to gettimeofday");
-
-    return;
-  }
+  //  result = gettimeofday(&now, NULL);
+  ////  ESP_LOGI(TAG, "time of day: %d", (int32_t)now.tv_sec +
+  ///(int32_t)now.tv_usec);
+  //  if (result) {
+  //    ESP_LOGI(TAG, "Failed to gettimeofday");
+  //
+  //    return;
+  //  }
+  now = esp_timer_get_time();
 
   base_message_tx.type = SNAPCAST_MESSAGE_TIME;
   base_message_tx.id = id_counter++;
   base_message_tx.refersTo = 0;
   base_message_tx.received.sec = 0;
   base_message_tx.received.usec = 0;
-  base_message_tx.sent.sec = now.tv_sec;
-  base_message_tx.sent.usec = now.tv_usec;
+  //  base_message_tx.sent.sec = now.tv_sec;
+  //  base_message_tx.sent.usec = now.tv_usec;
+  base_message_tx.sent.sec = now / 1000000;
+  base_message_tx.sent.usec = now - base_message_tx.sent.sec * 1000000;
   base_message_tx.size = TIME_MESSAGE_SIZE;
 
   result = base_message_serialize(&base_message_tx, base_message_serialized,
@@ -379,7 +383,7 @@ void error_callback(const FLAC__StreamDecoder *decoder,
 }
 
 static void flac_decoder_task(void *pvParameters) {
-  FLAC__bool ok = true;
+  //  FLAC__bool ok = true;
   FLAC__StreamDecoderInitStatus init_status;
   snapcastSetting_t *scSet = (snapcastSetting_t *)pvParameters;
 
@@ -424,7 +428,8 @@ static void flac_decoder_task(void *pvParameters) {
     ESP_LOGE(TAG, "ERROR: initializing decoder: %s\n",
              FLAC__StreamDecoderInitStatusString[init_status]);
 
-    ok = false;
+    //    ok = false;
+
     return;
   }
 
@@ -532,11 +537,14 @@ static void http_get_task(void *pvParameters) {
   wire_chunk_message_t wire_chnk = {{0, 0}, 0, NULL};
   char *hello_message_serialized = NULL;
   int result, size;  //, id_counter;
-  struct timeval now, trx, tdif, ttx;
+                     //  struct timeval now, trx, tdif, ttx;
+  int64_t now, trx, tdif, ttx;
   time_message_t time_message_rx = {{0, 0}};
   time_message_t time_message_tx = {{0, 0}};
-  struct timeval tmpDiffToServer;
-  struct timeval lastTimeSync = {0, 0};
+  //  struct timeval tmpDiffToServer;
+  //  struct timeval lastTimeSync = {0, 0};
+  int64_t tmpDiffToServer;
+  int64_t lastTimeSync = 0;
   esp_timer_handle_t timeSyncMessageTimer = NULL;
   int16_t frameSize = 960;  // 960*2: 20ms, 960*1: 10ms
   int16_t *audio = NULL;
@@ -594,7 +602,9 @@ static void http_get_task(void *pvParameters) {
         esp_timer_start_periodic(timeSyncMessageTimer, timeout);
       }
 
-      if ((latency_buffer_full() > 0) && (timeout < NORMAL_SYNC_LATENCY_BUF)) {
+      bool is_full = false;
+      latency_buffer_full(&is_full, portMAX_DELAY);
+      if ((is_full == true) && (timeout < NORMAL_SYNC_LATENCY_BUF)) {
         if (esp_timer_is_active(timeSyncMessageTimer)) {
           esp_timer_stop(timeSyncMessageTimer);
         }
@@ -729,18 +739,20 @@ static void http_get_task(void *pvParameters) {
 
     ESP_LOGI(TAG, "netconn connected");
 
-    result = gettimeofday(&now, NULL);
-    if (result) {
-      ESP_LOGE(TAG, "Failed to gettimeofday\r\n");
-      return;
-    }
+    //    result = gettimeofday(&now, NULL);
+    //    if (result) {
+    //      ESP_LOGE(TAG, "Failed to gettimeofday\r\n");
+    //      return;
+    //    }
+
+    now = esp_timer_get_time();
 
     // init base message
     base_message_rx.type = SNAPCAST_MESSAGE_HELLO;
     base_message_rx.id = 0x0000;
     base_message_rx.refersTo = 0x0000;
-    base_message_rx.sent.sec = now.tv_sec;
-    base_message_rx.sent.usec = now.tv_usec;
+    base_message_rx.sent.sec = now / 1000000;
+    base_message_rx.sent.usec = now - base_message_rx.sent.sec * 1000000;
     base_message_rx.received.sec = 0;
     base_message_rx.received.usec = 0;
     base_message_rx.size = 0x00000000;
@@ -1004,13 +1016,15 @@ static void http_get_task(void *pvParameters) {
                   base_message_rx.size |= (*start & 0xFF) << 24;
                   internalState = 0;
 
-                  result = gettimeofday(&now, NULL);
-                  if (result) {
-                    ESP_LOGW(TAG, "Failed to gettimeofday");
-                  }
+                  //                  result = gettimeofday(&now, NULL);
+                  //                  if (result) {
+                  //                    ESP_LOGW(TAG, "Failed to gettimeofday");
+                  //                  }
+                  now = esp_timer_get_time();
 
-                  base_message_rx.received.sec = now.tv_sec;
-                  base_message_rx.received.usec = now.tv_usec;
+                  base_message_rx.received.sec = now / 1000000;
+                  base_message_rx.received.usec =
+                      now - base_message_rx.received.sec * 1000000;
 
                   typedMsgCurrentPos = 0;
 
@@ -1243,10 +1257,6 @@ static void http_get_task(void *pvParameters) {
                             xQueueSend(flacTaskQHdl, &pFlacData, portMAX_DELAY);
                             //                            ESP_LOGI(TAG, "done");
 #else
-
-                            //                            startTime =
-                            //                            esp_timer_get_time();
-
                             flacData.bytes = tmp;
                             flacData.timestamp =
                                 wire_chnk.timestamp;  // store timestamp for
@@ -1465,16 +1475,6 @@ static void http_get_task(void *pvParameters) {
 
                                 insert_pcm_chunk(pcmData);
                                 pcmData = NULL;
-
-                                //                                endTime =
-                                //                                esp_timer_get_time();
-
-                                //                                ESP_LOGW(TAG,
-                                //                                "flac
-                                //                                duration:
-                                //                                %lldus",
-                                //                                endTime -
-                                //                                startTime);
                               }
 #endif
 
@@ -1869,19 +1869,25 @@ static void http_get_task(void *pvParameters) {
                         free(tmp);
                         tmp = NULL;
 
-                        //											  ESP_LOGI(TAG,
+                        // ESP_LOGI(TAG,
                         //"done codec header msg");
 
-                        trx.tv_sec = base_message_rx.sent.sec;
-                        trx.tv_usec = base_message_rx.sent.usec;
-                        // we do this, so uint32_t timvals
-                        // won't overflow if e.g. raspberry
-                        // server is off to far
-                        settimeofday(&trx, NULL);
-                        ESP_LOGI(TAG,
-                                 "syncing clock to server "
-                                 "%ld.%06ld",
-                                 trx.tv_sec, trx.tv_usec);
+                        //                        trx.tv_sec =
+                        //                        base_message_rx.sent.sec;
+                        //                        trx.tv_usec =
+                        //                        base_message_rx.sent.usec;
+                        //                        // we do this, so uint32_t
+                        //                        timvals
+                        //                        // won't overflow if e.g.
+                        //                        raspberry
+                        //                        // server is off to far
+                        //                        settimeofday(&trx, NULL);
+                        //                        ESP_LOGI(TAG,
+                        //                                 "syncing clock to
+                        //                                 server "
+                        //                                 "%ld.%06ld",
+                        //                                 trx.tv_sec,
+                        //                                 trx.tv_usec);
 
                         state = BASE_MESSAGE_STATE;
                         internalState = 0;
@@ -1893,7 +1899,9 @@ static void http_get_task(void *pvParameters) {
                                                    timeout);
                         }
 
-                        if ((latency_buffer_full() > 0) &&
+                        bool is_full = false;
+                        latency_buffer_full(&is_full, portMAX_DELAY);
+                        if ((is_full == true) &&
                             (timeout < NORMAL_SYNC_LATENCY_BUF)) {
                           if (esp_timer_is_active(timeSyncMessageTimer)) {
                             esp_timer_stop(timeSyncMessageTimer);
@@ -2304,14 +2312,21 @@ static void http_get_task(void *pvParameters) {
                         // simple conversion means I should
                         // probably use the timeval struct
                         // instead of my own
-                        trx.tv_sec = base_message_rx.received.sec;
-                        trx.tv_usec = base_message_rx.received.usec;
-                        ttx.tv_sec = base_message_rx.sent.sec;
-                        ttx.tv_usec = base_message_rx.sent.usec;
-                        timersub(&trx, &ttx, &tdif);
 
-                        trx.tv_sec = time_message_rx.latency.sec;
-                        trx.tv_usec = time_message_rx.latency.usec;
+                        //                        trx.tv_sec =
+                        //                        base_message_rx.received.sec;
+                        //                        trx.tv_usec =
+                        //                        base_message_rx.received.usec;
+                        //                        ttx.tv_sec =
+                        //                        base_message_rx.sent.sec;
+                        //                        ttx.tv_usec =
+                        //                        base_message_rx.sent.usec;
+                        //                        timersub(&trx, &ttx, &tdif);
+                        //
+                        //                        trx.tv_sec =
+                        //                        time_message_rx.latency.sec;
+                        //                        trx.tv_usec =
+                        //                        time_message_rx.latency.usec;
 
                         // trx == c2s: client to server
                         // tdif == s2c: server to client
@@ -2324,23 +2339,43 @@ static void http_get_task(void *pvParameters) {
                         //                    tdif.tv_sec,
                         //                    tdif.tv_usec);
 
-                        timersub(&trx, &tdif, &tmpDiffToServer);
-                        if ((tmpDiffToServer.tv_sec / 2) == 0) {
-                          tmpDiffToServer.tv_sec = 0;
-                          tmpDiffToServer.tv_usec =
-                              (suseconds_t)((int64_t)tmpDiffToServer.tv_sec *
-                                            1000000LL / 2) +
-                              (int64_t)tmpDiffToServer.tv_usec / 2;
-                        } else {
-                          tmpDiffToServer.tv_sec /= 2;
-                          tmpDiffToServer.tv_usec /= 2;
-                        }
+                        //                        timersub(&trx, &tdif,
+                        //                        &tmpDiffToServer); if
+                        //                        ((tmpDiffToServer.tv_sec / 2)
+                        //                        == 0) {
+                        //                          tmpDiffToServer.tv_sec = 0;
+                        //                          tmpDiffToServer.tv_usec =
+                        //                              (suseconds_t)((int32_t)tmpDiffToServer.tv_sec
+                        //                              *
+                        //                                            1000000 /
+                        //                                            2) +
+                        //                              (int32_t)tmpDiffToServer.tv_usec
+                        //                              / 2;
+                        //                        } else {
+                        //                          tmpDiffToServer.tv_sec /= 2;
+                        //                          tmpDiffToServer.tv_usec /=
+                        //                          2;
+                        //                        }
 
-                        //							                   ESP_LOGI(TAG,
-                        //							                   "Current
-                        // latency: %ld.%06ld",
-                        // tmpDiffToServer.tv_sec,
-                        //							                   tmpDiffToServer.tv_usec);
+                        trx =
+                            (int64_t)base_message_rx.received.sec * 1000000LL +
+                            (int64_t)base_message_rx.received.usec;
+                        ttx = (int64_t)base_message_rx.sent.sec * 1000000LL +
+                              (int64_t)base_message_rx.sent.usec;
+                        tdif = trx - ttx;
+                        trx = (int64_t)time_message_rx.latency.sec * 1000000LL +
+                              (int64_t)time_message_rx.latency.usec;
+                        tmpDiffToServer = (trx - tdif) / 2;
+
+                        // ESP_LOGI(TAG, "Current latency: %ld.%06ld, runtime
+                        // %lld", tmpDiffToServer.tv_sec,
+                        // tmpDiffToServer.tv_usec, endTime - startTime);
+                        //                        ESP_LOGI(TAG, "Current
+                        //                        latency: %lld.%06lld, runtime
+                        //                        %lld", tmpDiffToServer /
+                        //                        1000000LL, tmpDiffToServer -
+                        //                        tmpDiffToServer / 1000000LL,
+                        //                        endTime - startTime);
 
                         // TODO: Move the time message sending
                         // to an own thread maybe following
@@ -2350,14 +2385,18 @@ static void http_get_task(void *pvParameters) {
                         // apply a median filter. Based on
                         // these we can get server now
                         {
-                          struct timeval diff;
+                          //                          struct timeval diff;
+                          int64_t diff;
                           int64_t newValue;
 
                           // clear diffBuffer if last update is
                           // older than a minute
-                          timersub(&now, &lastTimeSync, &diff);
+                          //                          timersub(&now,
+                          //                          &lastTimeSync, &diff);
+                          diff = now - lastTimeSync;
 
-                          if (diff.tv_sec > 60) {
+                          // if (diff.tv_sec > 60) {
+                          if (diff > 60000000LL) {
                             ESP_LOGW(TAG,
                                      "Last time sync older "
                                      "than a minute. "
@@ -2374,7 +2413,9 @@ static void http_get_task(void *pvParameters) {
                                                          timeout);
                               }
 
-                              if ((latency_buffer_full() > 0) &&
+                              bool is_full = false;
+                              latency_buffer_full(&is_full, portMAX_DELAY);
+                              if ((is_full == true) &&
                                   (timeout < NORMAL_SYNC_LATENCY_BUF)) {
                                 if (esp_timer_is_active(timeSyncMessageTimer)) {
                                   esp_timer_stop(timeSyncMessageTimer);
@@ -2386,17 +2427,23 @@ static void http_get_task(void *pvParameters) {
                             }
                           }
 
-                          newValue =
-                              ((int64_t)tmpDiffToServer.tv_sec * 1000000LL +
-                               (int64_t)tmpDiffToServer.tv_usec);
+                          //                          newValue =
+                          //                              ((int32_t)tmpDiffToServer.tv_sec
+                          //                              * 1000000 +
+                          //                               (int32_t)tmpDiffToServer.tv_usec);
+                          newValue = tmpDiffToServer;
+
                           player_latency_insert(newValue);
 
                           //                           ESP_LOGE(TAG, "latency
-                          //                           %lld", newValue);
+                          //                           %ld", newValue);
 
                           // store current time
-                          lastTimeSync.tv_sec = now.tv_sec;
-                          lastTimeSync.tv_usec = now.tv_usec;
+                          //                          lastTimeSync.tv_sec =
+                          //                          now.tv_sec;
+                          //                          lastTimeSync.tv_usec =
+                          //                          now.tv_usec;
+                          lastTimeSync = now;
 
                           //                          if
                           //                          (xSemaphoreTake(timeSyncSemaphoreHandle,
@@ -2442,7 +2489,9 @@ static void http_get_task(void *pvParameters) {
                                                        timeout);
                             }
 
-                            if ((latency_buffer_full() > 0) &&
+                            bool is_full = false;
+                            latency_buffer_full(&is_full, portMAX_DELAY);
+                            if ((is_full == true) &&
                                 (timeout < NORMAL_SYNC_LATENCY_BUF)) {
                               timeout = NORMAL_SYNC_LATENCY_BUF;
 
