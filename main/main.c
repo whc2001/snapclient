@@ -51,8 +51,6 @@
 #include "player.h"
 #include "snapcast.h"
 
-#include "wifi_logger.h"
-
 static FLAC__StreamDecoderReadStatus read_callback(
     const FLAC__StreamDecoder *decoder, FLAC__byte buffer[], size_t *bytes,
     void *client_data);
@@ -77,7 +75,7 @@ SemaphoreHandle_t decoderWriteSemaphore = NULL;
 
 const char *VERSION_STRING = "0.0.2";
 
-#define HTTP_TASK_PRIORITY 8
+#define HTTP_TASK_PRIORITY 9
 #define HTTP_TASK_CORE_ID tskNO_AFFINITY  // 1  // tskNO_AFFINITY
 
 #define OTA_TASK_PRIORITY 6
@@ -434,8 +432,6 @@ static void flac_decoder_task(void *pvParameters) {
   }
 
   while (1) {
-    ESP_LOGI(TAG, "test");
-
     FLAC__stream_decoder_process_until_end_of_stream(flacDecoder);
   }
 }
@@ -466,9 +462,9 @@ void flac_task(void *pvParameters) {
     if (pFlacData != NULL) {
       currentTimestamp = pFlacData->timestamp;
 
-      ESP_LOGE(TAG, "Got timestamp %lld",
-               (uint64_t)currentTimestamp.sec * 1000000 +
-                   (uint64_t)currentTimestamp.usec);
+      //      ESP_LOGE(TAG, "Got timestamp %lld",
+      //               (uint64_t)currentTimestamp.sec * 1000000 +
+      //                   (uint64_t)currentTimestamp.usec);
 
       xSemaphoreTake(decoderReadSemaphore, portMAX_DELAY);
 
@@ -481,6 +477,7 @@ void flac_task(void *pvParameters) {
       // afterwards for next round
       xSemaphoreGive(decoderReadSemaphore);
 
+      free(pFlacData->inData);
       free(pFlacData);
     } else {
       pcm_chunk_message_t *pcmData = NULL;
@@ -528,30 +525,19 @@ void flac_task(void *pvParameters) {
  *
  */
 static void http_get_task(void *pvParameters) {
-  struct sockaddr_in servaddr;
   char *start;
-  int sock = -1;
   base_message_t base_message_rx;
-  base_message_t base_message_tx;
   hello_message_t hello_message;
   wire_chunk_message_t wire_chnk = {{0, 0}, 0, NULL};
   char *hello_message_serialized = NULL;
-  int result, size;  //, id_counter;
-                     //  struct timeval now, trx, tdif, ttx;
+  int result;
   int64_t now, trx, tdif, ttx;
   time_message_t time_message_rx = {{0, 0}};
-  time_message_t time_message_tx = {{0, 0}};
-  //  struct timeval tmpDiffToServer;
-  //  struct timeval lastTimeSync = {0, 0};
   int64_t tmpDiffToServer;
   int64_t lastTimeSync = 0;
   esp_timer_handle_t timeSyncMessageTimer = NULL;
-  int16_t frameSize = 960;  // 960*2: 20ms, 960*1: 10ms
-  int16_t *audio = NULL;
-  int16_t pcm_size = 120;
   uint16_t channels;
   esp_err_t err = 0;
-  codec_header_message_t codec_header_message;
   server_settings_message_t server_settings_message;
   bool received_header = false;
   mdns_result_t *r;
@@ -561,10 +547,6 @@ static void http_get_task(void *pvParameters) {
   flacData_t flacData = {NULL, {0, 0}, NULL, 0};
   flacData_t *pFlacData;
   pcm_chunk_message_t *pcmData = NULL;
-  char *typedMsg = NULL;
-  uint32_t lastTypedMsgSize = 0;
-  //  struct netconn *lwipNetconn = NULL;
-  ip_addr_t local_ip;
   ip_addr_t remote_ip;
   uint16_t remotePort = 0;
   int rc1 = ERR_OK, rc2 = ERR_OK;
@@ -575,10 +557,6 @@ static void http_get_task(void *pvParameters) {
 
   // create a timer to send time sync messages every x µs
   esp_timer_create(&tSyncArgs, &timeSyncMessageTimer);
-  //  timeSyncSemaphoreHandle = xSemaphoreCreateMutex();
-  //  xSemaphoreGive(timeSyncSemaphoreHandle);
-
-  // id_counter = 0;
 
 #if CONFIG_SNAPCLIENT_USE_MDNS
   ESP_LOGI(TAG, "Enable mdns");
@@ -668,17 +646,7 @@ static void http_get_task(void *pvParameters) {
       }
     }
 
-    //      char serverAddr[] = "255.255.255.255";
-    //      ESP_LOGI (TAG, "Found %s:%d",
-    //                inet_ntop (AF_INET, &(r->addr->addr.u_addr.ip4.addr),
-    //                           serverAddr, sizeof (serverAddr)),
-    //                r->port);
-
     if (r->addr) {
-      servaddr.sin_family = AF_INET;
-      servaddr.sin_addr.s_addr = r->addr->addr.u_addr.ip4.addr;
-      servaddr.sin_port = htons(r->port);
-
       ip_addr_copy(remote_ip, (r->addr->addr));
       remote_ip.type = IPADDR_TYPE_V4;
       remotePort = r->port;
@@ -694,6 +662,8 @@ static void http_get_task(void *pvParameters) {
     }
 #else
     // configure a failsafe snapserver according to CONFIG values
+    struct sockaddr_in servaddr;
+
     servaddr.sin_family = AF_INET;
     inet_pton(AF_INET, SNAPCAST_SERVER_HOST, &(servaddr.sin_addr.s_addr));
     servaddr.sin_port = htons(SNAPCAST_SERVER_PORT);
@@ -723,7 +693,6 @@ static void http_get_task(void *pvParameters) {
       ESP_LOGE(TAG, "can't bind local IP");
     }
 
-    // ipaddr_aton("192.168.1.54", &remote_ip);
     rc2 = netconn_connect(lwipNetconn, &remote_ip, remotePort);
     if (rc2 != ERR_OK) {
       ESP_LOGE(TAG, "can't connect to remote %s:%d, err %d",
@@ -738,12 +707,6 @@ static void http_get_task(void *pvParameters) {
     }
 
     ESP_LOGI(TAG, "netconn connected");
-
-    //    result = gettimeofday(&now, NULL);
-    //    if (result) {
-    //      ESP_LOGE(TAG, "Failed to gettimeofday\r\n");
-    //      return;
-    //    }
 
     now = esp_timer_get_time();
 
@@ -814,7 +777,6 @@ static void http_get_task(void *pvParameters) {
     scSet.volume = 0;
     scSet.muted = true;
 
-    uint32_t cntTmp = 0;
     uint64_t startTime, endTime;
     char *tmp;
     int32_t remainderSize = 0;
@@ -822,22 +784,18 @@ static void http_get_task(void *pvParameters) {
     size_t typedMsgCurrentPos = 0;
     uint32_t typedMsgLen = 0;
     uint32_t offset = 0;
-    size = 0;
     uint32_t tmpData = 0;
-    uint32_t *p_tmpData = NULL;
-    int32_t shift = 24;
 
 #define BASE_MESSAGE_STATE 0
 #define TYPED_MESSAGE_STATE 1
 
-    uint32_t state =
-        BASE_MESSAGE_STATE;  // 0 ... base message, 1 ... typed message
+    // 0 ... base message, 1 ... typed message
+    uint32_t state = BASE_MESSAGE_STATE;
     uint32_t internalState = 0;
-    uint32_t counter = 0;
 
     firstNetBuf = NULL;
 
-#define TEST_DECODER_TASK 0
+#define TEST_DECODER_TASK 1
 
     decoderWriteSemaphore = xSemaphoreCreateMutex();
     xSemaphoreTake(decoderWriteSemaphore, portMAX_DELAY);
@@ -1016,10 +974,6 @@ static void http_get_task(void *pvParameters) {
                   base_message_rx.size |= (*start & 0xFF) << 24;
                   internalState = 0;
 
-                  //                  result = gettimeofday(&now, NULL);
-                  //                  if (result) {
-                  //                    ESP_LOGW(TAG, "Failed to gettimeofday");
-                  //                  }
                   now = esp_timer_get_time();
 
                   base_message_rx.received.sec = now / 1000000;
@@ -1232,12 +1186,6 @@ static void http_get_task(void *pvParameters) {
                         tmp = len;
                       }
 
-                      // TODO: put the following part which is blocking and
-                      // waiting for decoded data to own task
-                      //      with lower priority than this task. This way
-                      //      snapclient latency measurements won't be stalled
-                      //      and WiFi communication can keep running
-
                       if (received_header == true) {
                         switch (codec) {
                           case FLAC: {
@@ -1248,14 +1196,13 @@ static void http_get_task(void *pvParameters) {
                             pFlacData->timestamp =
                                 wire_chnk.timestamp;  // store timestamp for
                                                       // later use
-                            pFlacData->inData = start;
+                            pFlacData->inData =
+                                (char *)malloc(tmp * sizeof(char));
+                            memcpy(pFlacData->inData, start, tmp);
                             pFlacData->outData = NULL;
 
-                            //                            ESP_LOGI(TAG, "send to
-                            //                            queue");
                             // send data to seperate task which will handle this
                             xQueueSend(flacTaskQHdl, &pFlacData, portMAX_DELAY);
-                            //                            ESP_LOGI(TAG, "done");
 #else
                             flacData.bytes = tmp;
                             flacData.timestamp =
@@ -1263,6 +1210,8 @@ static void http_get_task(void *pvParameters) {
                                                       // later use
                             flacData.inData = start;
                             pFlacData = &flacData;
+
+                            startTime = esp_timer_get_time();
 
                             xSemaphoreTake(decoderReadSemaphore, portMAX_DELAY);
 
@@ -1289,7 +1238,6 @@ static void http_get_task(void *pvParameters) {
 
                               offset = 0;
                               remainderSize = 0;
-                              cntTmp = 0;
                             }
 
                             if (pcmData != NULL) {
@@ -1416,28 +1364,15 @@ static void http_get_task(void *pvParameters) {
                       len -= tmp;
 
                       if (typedMsgCurrentPos >= base_message_rx.size) {
-                        // ESP_LOGI(TAG,
-                        //"data remaining %d %d", len,
-                        // currentPos);
-                        // ESP_LOGI(TAG, "got wire chunk with
-                        // size: %d, at time %d.%d",
-                        // wire_chnk.size,
-                        // wire_chnk.timestamp.sec,
-                        // wire_chnk.timestamp.usec);
-
                         if (received_header == true) {
                           switch (codec) {
                             case FLAC: {
 #if TEST_DECODER_TASK
                               pFlacData = NULL;  // send NULL so we know to wait
                                                  // for decoded data in task
-                              //                              ESP_LOGI(TAG,
-                              //                              "done sending data
-                              //                              to queue");
+
                               xQueueSend(flacTaskQHdl, &pFlacData,
                                          portMAX_DELAY);
-                              //                              ESP_LOGI(TAG,
-                              //                              "really done");
 #else
                               xSemaphoreGive(decoderWriteSemaphore);
                               // and wait until it is done
@@ -1467,6 +1402,8 @@ static void http_get_task(void *pvParameters) {
                                   return;
                                 }
 
+                                endTime = esp_timer_get_time();
+
 #if CONFIG_USE_DSP_PROCESSOR
                                 dsp_setup_flow(500, scSet.sr, scSet.chkDur_ms);
                                 dsp_processor(pcm_chunk_message.payload,
@@ -1474,6 +1411,10 @@ static void http_get_task(void *pvParameters) {
 #endif
 
                                 insert_pcm_chunk(pcmData);
+
+                                // ESP_LOGE(TAG, "duration = %lld", endTime -
+                                // startTime);
+
                                 pcmData = NULL;
                               }
 #endif
@@ -1639,8 +1580,7 @@ static void http_get_task(void *pvParameters) {
                         // NULL terminate string
                         tmp[typedMsgLen] = 0;
 
-                        // ESP_LOGI
-                        // (TAG, "got codec string: %s", tmp);
+                        // ESP_LOGI (TAG, "got codec string: %s", tmp);
 
                         if (strcmp(tmp, "opus") == 0) {
                           codec = OPUS;
@@ -1869,25 +1809,7 @@ static void http_get_task(void *pvParameters) {
                         free(tmp);
                         tmp = NULL;
 
-                        // ESP_LOGI(TAG,
-                        //"done codec header msg");
-
-                        //                        trx.tv_sec =
-                        //                        base_message_rx.sent.sec;
-                        //                        trx.tv_usec =
-                        //                        base_message_rx.sent.usec;
-                        //                        // we do this, so uint32_t
-                        //                        timvals
-                        //                        // won't overflow if e.g.
-                        //                        raspberry
-                        //                        // server is off to far
-                        //                        settimeofday(&trx, NULL);
-                        //                        ESP_LOGI(TAG,
-                        //                                 "syncing clock to
-                        //                                 server "
-                        //                                 "%ld.%06ld",
-                        //                                 trx.tv_sec,
-                        //                                 trx.tv_usec);
+                        // ESP_LOGI(TAG, "done codec header msg");
 
                         state = BASE_MESSAGE_STATE;
                         internalState = 0;
@@ -2035,7 +1957,7 @@ static void http_get_task(void *pvParameters) {
 
                         tmp[typedMsgLen] = 0;  // NULL terminate string
 
-                        //									  			  ESP_LOGI
+                        // ESP_LOGI
                         //(TAG, "got string: %s", tmp);
 
                         result = server_settings_message_deserialize(
@@ -2086,13 +2008,7 @@ static void http_get_task(void *pvParameters) {
                       }
 
                       internalState++;
-
-                      // currentPos++;
-                      // len--;
-                      //
-                      // break;
-
-                      // intentional fall through
+                      // no break
                     }
 
                     case 5: {
@@ -2274,88 +2190,13 @@ static void http_get_task(void *pvParameters) {
                       start++;
                       currentPos++;
                       len--;
-
                       if (typedMsgCurrentPos >= base_message_rx.size) {
-                        // ESP_LOGI(TAG,
-                        // "done time message");
+                        // ESP_LOGI(TAG, "done time message");
 
                         typedMsgCurrentPos = 0;
 
                         state = BASE_MESSAGE_STATE;
                         internalState = 0;
-
-                        // ESP_LOGI(TAG, "BaseTX :"
-                        // "%d %d ", base_message.sent.sec,
-                        // base_message.sent.usec);
-                        // ESP_LOGI(TAG, "BaseRX
-                        // ": %d %d ",
-                        // base_message.received.sec ,
-                        // base_message.received.usec);
-                        // ESP_LOGI(TAG, "baseTX->RX : %d s ",
-                        // (base_message.received.sec
-                        // -
-                        //			base_message.sent.sec));
-                        // ESP_LOGI(TAG,
-                        // "baseTX->RX : %d ms ",
-                        //			(base_message.received.usec
-                        //-
-                        // base_message.sent.usec)/1000);
-                        // ESP_LOGI(TAG,
-                        // "Latency : %d.%d ",
-                        // time_message.latency.sec,
-                        // time_message_rx.latency.usec/1000);
-
-                        // tv == server to client latency (s2c)
-                        // time_message_rx.latency == client to
-                        // server latency(c2s)
-                        // TODO the fact that I have to do this
-                        // simple conversion means I should
-                        // probably use the timeval struct
-                        // instead of my own
-
-                        //                        trx.tv_sec =
-                        //                        base_message_rx.received.sec;
-                        //                        trx.tv_usec =
-                        //                        base_message_rx.received.usec;
-                        //                        ttx.tv_sec =
-                        //                        base_message_rx.sent.sec;
-                        //                        ttx.tv_usec =
-                        //                        base_message_rx.sent.usec;
-                        //                        timersub(&trx, &ttx, &tdif);
-                        //
-                        //                        trx.tv_sec =
-                        //                        time_message_rx.latency.sec;
-                        //                        trx.tv_usec =
-                        //                        time_message_rx.latency.usec;
-
-                        // trx == c2s: client to server
-                        // tdif == s2c: server to client
-                        //                    ESP_LOGI(TAG,
-                        //                    "c2s: %ld %ld",
-                        //                    trx.tv_sec,
-                        //                    trx.tv_usec);
-                        //                    ESP_LOGI(TAG,
-                        //                    "s2c:  %ld %ld",
-                        //                    tdif.tv_sec,
-                        //                    tdif.tv_usec);
-
-                        //                        timersub(&trx, &tdif,
-                        //                        &tmpDiffToServer); if
-                        //                        ((tmpDiffToServer.tv_sec / 2)
-                        //                        == 0) {
-                        //                          tmpDiffToServer.tv_sec = 0;
-                        //                          tmpDiffToServer.tv_usec =
-                        //                              (suseconds_t)((int32_t)tmpDiffToServer.tv_sec
-                        //                              *
-                        //                                            1000000 /
-                        //                                            2) +
-                        //                              (int32_t)tmpDiffToServer.tv_usec
-                        //                              / 2;
-                        //                        } else {
-                        //                          tmpDiffToServer.tv_sec /= 2;
-                        //                          tmpDiffToServer.tv_usec /=
-                        //                          2;
-                        //                        }
 
                         trx =
                             (int64_t)base_message_rx.received.sec * 1000000LL +
@@ -2367,122 +2208,22 @@ static void http_get_task(void *pvParameters) {
                               (int64_t)time_message_rx.latency.usec;
                         tmpDiffToServer = (trx - tdif) / 2;
 
-                        // ESP_LOGI(TAG, "Current latency: %ld.%06ld, runtime
-                        // %lld", tmpDiffToServer.tv_sec,
-                        // tmpDiffToServer.tv_usec, endTime - startTime);
-                        //                        ESP_LOGI(TAG, "Current
-                        //                        latency: %lld.%06lld, runtime
-                        //                        %lld", tmpDiffToServer /
-                        //                        1000000LL, tmpDiffToServer -
-                        //                        tmpDiffToServer / 1000000LL,
-                        //                        endTime - startTime);
+                        int64_t diff;
 
-                        // TODO: Move the time message sending
-                        // to an own thread maybe following
-                        // code is storing / initializing /
-                        // resetting diff to server algorithm
-                        // we collect a number of latencies and
-                        // apply a median filter. Based on
-                        // these we can get server now
-                        {
-                          //                          struct timeval diff;
-                          int64_t diff;
-                          int64_t newValue;
+                        // clear diffBuffer if last update is
+                        // older than a minute
+                        diff = now - lastTimeSync;
+                        if (diff > 60000000LL) {
+                          ESP_LOGW(TAG,
+                                   "Last time sync older "
+                                   "than a minute. "
+                                   "Clearing time buffer");
 
-                          // clear diffBuffer if last update is
-                          // older than a minute
-                          //                          timersub(&now,
-                          //                          &lastTimeSync, &diff);
-                          diff = now - lastTimeSync;
+                          reset_latency_buffer();
 
-                          // if (diff.tv_sec > 60) {
-                          if (diff > 60000000LL) {
-                            ESP_LOGW(TAG,
-                                     "Last time sync older "
-                                     "than a minute. "
-                                     "Clearing time buffer");
+                          timeout = FAST_SYNC_LATENCY_BUF;
 
-                            reset_latency_buffer();
-
-                            timeout = FAST_SYNC_LATENCY_BUF;
-
-                            esp_timer_stop(timeSyncMessageTimer);
-                            if (received_header == true) {
-                              if (!esp_timer_is_active(timeSyncMessageTimer)) {
-                                esp_timer_start_periodic(timeSyncMessageTimer,
-                                                         timeout);
-                              }
-
-                              bool is_full = false;
-                              latency_buffer_full(&is_full, portMAX_DELAY);
-                              if ((is_full == true) &&
-                                  (timeout < NORMAL_SYNC_LATENCY_BUF)) {
-                                if (esp_timer_is_active(timeSyncMessageTimer)) {
-                                  esp_timer_stop(timeSyncMessageTimer);
-                                }
-
-                                esp_timer_start_periodic(timeSyncMessageTimer,
-                                                         timeout);
-                              }
-                            }
-                          }
-
-                          //                          newValue =
-                          //                              ((int32_t)tmpDiffToServer.tv_sec
-                          //                              * 1000000 +
-                          //                               (int32_t)tmpDiffToServer.tv_usec);
-                          newValue = tmpDiffToServer;
-
-                          player_latency_insert(newValue);
-
-                          //                           ESP_LOGE(TAG, "latency
-                          //                           %ld", newValue);
-
-                          // store current time
-                          //                          lastTimeSync.tv_sec =
-                          //                          now.tv_sec;
-                          //                          lastTimeSync.tv_usec =
-                          //                          now.tv_usec;
-                          lastTimeSync = now;
-
-                          //                          if
-                          //                          (xSemaphoreTake(timeSyncSemaphoreHandle,
-                          //                          0) ==
-                          //                              pdTRUE) {
-                          //                            ESP_LOGW(TAG,
-                          //                                     "couldn't take
-                          //                                     "
-                          //                                     "timeSyncSemaphoreHandle");
-                          //                          }
-
-                          /*
-                          //uint64_t timeout;
-                          if (latency_buffer_full() > 0) {
-                            // we give
-                            // timeSyncSemaphoreHandle after
-                            // x µs through timer
-                            // TODO: maybe start a periodic
-                            // timer here, but we need to
-                            // remember if it is already
-                            // running then. also we need to
-                            // stop it if
-                            // reset_latency_buffer() was
-                            // called
-                            timeout = 1000000;
-
-                            ESP_LOGE(TAG, "full %lld", timeout);
-                          }
-                          else {
-                            // Do a initial time sync with
-                            // the server at boot we need to
-                            // fill diffBuff fast so we get a
-                            // good estimate of latency
-                            timeout = 100000;
-
-                            ESP_LOGE(TAG, "empty %lld", timeout);
-                          }
-                          */
-
+                          esp_timer_stop(timeSyncMessageTimer);
                           if (received_header == true) {
                             if (!esp_timer_is_active(timeSyncMessageTimer)) {
                               esp_timer_start_periodic(timeSyncMessageTimer,
@@ -2493,10 +2234,6 @@ static void http_get_task(void *pvParameters) {
                             latency_buffer_full(&is_full, portMAX_DELAY);
                             if ((is_full == true) &&
                                 (timeout < NORMAL_SYNC_LATENCY_BUF)) {
-                              timeout = NORMAL_SYNC_LATENCY_BUF;
-
-                              ESP_LOGI(TAG, "latency buffer full");
-
                               if (esp_timer_is_active(timeSyncMessageTimer)) {
                                 esp_timer_stop(timeSyncMessageTimer);
                               }
@@ -2505,9 +2242,37 @@ static void http_get_task(void *pvParameters) {
                                                        timeout);
                             }
                           }
+                        }
 
-                          // esp_timer_start_once(timeSyncMessageTimer,
-                          // timeout);
+                        player_latency_insert(tmpDiffToServer);
+
+                        // ESP_LOGI(TAG, "Current latency: %lld",
+                        // tmpDiffToServer);
+
+                        // store current time
+                        lastTimeSync = now;
+
+                        if (received_header == true) {
+                          if (!esp_timer_is_active(timeSyncMessageTimer)) {
+                            esp_timer_start_periodic(timeSyncMessageTimer,
+                                                     timeout);
+                          }
+
+                          bool is_full = false;
+                          latency_buffer_full(&is_full, portMAX_DELAY);
+                          if ((is_full == true) &&
+                              (timeout < NORMAL_SYNC_LATENCY_BUF)) {
+                            timeout = NORMAL_SYNC_LATENCY_BUF;
+
+                            ESP_LOGI(TAG, "latency buffer full");
+
+                            if (esp_timer_is_active(timeSyncMessageTimer)) {
+                              esp_timer_stop(timeSyncMessageTimer);
+                            }
+
+                            esp_timer_start_periodic(timeSyncMessageTimer,
+                                                     timeout);
+                          }
                         }
                       } else {
                         ESP_LOGE(TAG,
@@ -2579,77 +2344,6 @@ static void http_get_task(void *pvParameters) {
 
         break;
       }
-
-      /*
-      if (received_header == true) {
-        if (!esp_timer_is_active(timeSyncMessageTimer)) {
-          esp_timer_start_periodic(timeSyncMessageTimer, timeout);
-        }
-
-        if ((latency_buffer_full() > 0) && (timeout < 1000000)) {
-          if (esp_timer_is_active(timeSyncMessageTimer)) {
-            esp_timer_stop(timeSyncMessageTimer);
-          }
-
-          esp_timer_start_periodic(timeSyncMessageTimer, timeout);
-        }
-      }
-      */
-
-      /*
-      if (received_header == true) {
-        if (xSemaphoreTake(timeSyncSemaphoreHandle, 0) == pdTRUE) {
-          result = gettimeofday(&now, NULL);
-          // ESP_LOGI(TAG, "time of day: %ld %ld", now.tv_sec,
-          // now.tv_usec);
-          if (result) {
-            ESP_LOGI(TAG, "Failed to gettimeofday");
-            continue;
-          }
-
-          base_message_tx.type = SNAPCAST_MESSAGE_TIME;
-          base_message_tx.id = id_counter++;
-          base_message_tx.refersTo = 0;
-          base_message_tx.received.sec = 0;
-          base_message_tx.received.usec = 0;
-          base_message_tx.sent.sec = now.tv_sec;
-          base_message_tx.sent.usec = now.tv_usec;
-          base_message_tx.size = TIME_MESSAGE_SIZE;
-
-          result = base_message_serialize(
-              &base_message_tx, base_message_serialized, BASE_MESSAGE_SIZE);
-          if (result) {
-            ESP_LOGE(TAG, "Failed to serialize base message for time");
-            continue;
-          }
-
-          memset(&time_message_tx, 0, sizeof(time_message_tx));
-
-          result = time_message_serialize(
-              &time_message_tx, time_message_serialized, TIME_MESSAGE_SIZE);
-          if (result) {
-            ESP_LOGI(TAG, "Failed to serialize time message");
-            continue;
-          }
-
-          rc1 = netconn_write(lwipNetconn, base_message_serialized,
-                              BASE_MESSAGE_SIZE, NETCONN_NOCOPY);
-          if (rc1 != ERR_OK) {
-            ESP_LOGW(TAG, "error writing timesync base msg");
-
-            continue;
-          }
-
-          rc1 = netconn_write(lwipNetconn, time_message_serialized,
-                              TIME_MESSAGE_SIZE, NETCONN_NOCOPY);
-          if (rc1 != ERR_OK) {
-            ESP_LOGW(TAG, "error writing timesync msg");
-
-            continue;
-          }
-        }
-      }
-      */
     }
   }
 }
@@ -2696,8 +2390,6 @@ void app_main(void) {
   // Enable and setup WIFI in station mode and connect to Access point setup in
   // menu config or set up provisioning mode settable in menuconfig
   wifi_init();
-
-  // start_wifi_logger();
 
   // Enable websocket server
   ESP_LOGI(TAG, "Connected to AP");
