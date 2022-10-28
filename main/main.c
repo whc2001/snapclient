@@ -795,7 +795,7 @@ static void http_get_task(void *pvParameters) {
 
     firstNetBuf = NULL;
 
-#define TEST_DECODER_TASK 1
+#define TEST_DECODER_TASK 0
 
     decoderWriteSemaphore = xSemaphoreCreateMutex();
     xSemaphoreTake(decoderWriteSemaphore, portMAX_DELAY);
