@@ -44,6 +44,7 @@ dsp_processor (char *audio, size_t chunk_size, dspFlows_t dspFlow)
   int16_t len = chunk_size / 4;
   int16_t valint;
   uint16_t i;
+  volatile uint32_t *audio_tmp = (uint32_t *)audio; //volatile needed to ensure 32 bit access
 
   if ((sbuffer0 == NULL) || (sbufout0 == NULL) || (sbuftmp0 == NULL))
     {
@@ -66,8 +67,7 @@ dsp_processor (char *audio, size_t chunk_size, dspFlows_t dspFlow)
         for (i = 0; i < len; i++)
           {
             sbuffer0[i] = dynamic_vol * 0.5
-                          * ((float)((int16_t) (audio[i * 4 + 1] << 8)
-                                     + audio[i * 4 + 0]))
+                          * ((float)((int16_t)(audio_tmp[i] & 0xFFFF)))
                           / 32768;
           }
         BIQUAD (sbuffer0, sbufout0, len, bq[6].coeffs, bq[6].w);
@@ -75,17 +75,14 @@ dsp_processor (char *audio, size_t chunk_size, dspFlows_t dspFlow)
         for (i = 0; i < len; i++)
           {
             valint = (int16_t) (sbufout0[i] * 32768);
-
-            audio[i * 4 + 0] = (valint & 0x00ff);
-            audio[i * 4 + 1] = ((valint & 0xff00) >> 8);
+            audio_tmp[i] = (audio_tmp[i]&0xFFFF0000) + (uint32_t)valint;
           }
 
         // channel 1
         for (i = 0; i < len; i++)
           {
             sbuffer0[i] = dynamic_vol * 0.5
-                          * ((float)((int16_t) (audio[i * 4 + 3] << 8)
-                                     + audio[i * 4 + 2]))
+                          * ((float)((int16_t)((audio_tmp[i] & 0xFFFF0000) >> 16)))
                           / 32768;
           }
         BIQUAD (sbuffer0, sbufout0, len, bq[7].coeffs, bq[7].w);
@@ -93,8 +90,7 @@ dsp_processor (char *audio, size_t chunk_size, dspFlows_t dspFlow)
         for (i = 0; i < len; i++)
           {
             valint = (int16_t) (sbufout0[i] * 32768);
-            audio[i * 4 + 2] = (valint & 0x00ff);
-            audio[i * 4 + 3] = ((valint & 0xff00) >> 8);
+            audio_tmp[i] = (audio_tmp[i]&0xFFFF) + ((uint32_t)valint << 16);
           }
       }
       break;
@@ -105,8 +101,7 @@ dsp_processor (char *audio, size_t chunk_size, dspFlows_t dspFlow)
         for (i = 0; i < len; i++)
           {
             sbuffer0[i] = dynamic_vol * 0.5
-                          * ((float)((int16_t) (audio[i * 4 + 1] << 8)
-                                     + audio[i * 4 + 0]))
+                          * ((float)((int16_t)(audio_tmp[i] & 0xFFFF)))
                           / 32768;
           }
         BIQUAD (sbuffer0, sbuftmp0, len, bq[0].coeffs, bq[0].w);
@@ -115,16 +110,14 @@ dsp_processor (char *audio, size_t chunk_size, dspFlows_t dspFlow)
         for (i = 0; i < len; i++)
           {
             valint = (int16_t) (sbufout0[i] * 32768);
-            audio[i * 4 + 0] = (valint & 0x00ff);
-            audio[i * 4 + 1] = ((valint & 0xff00) >> 8);
+            audio_tmp[i] = (audio_tmp[i]&0xFFFF0000) + (uint32_t)valint;
           }
 
         // Process audio ch1 HIGH PASS FILTER
         for (i = 0; i < len; i++)
           {
             sbuffer0[i] = dynamic_vol * 0.5
-                          * ((float)((int16_t) (audio[i * 4 + 3] << 8)
-                                     + audio[i * 4 + 2]))
+                          * ((float)((int16_t)((audio_tmp[i] & 0xFFFF0000) >> 16)))
                           / 32768;
           }
         BIQUAD (sbuffer0, sbuftmp0, len, bq[2].coeffs, bq[2].w);
@@ -133,8 +126,7 @@ dsp_processor (char *audio, size_t chunk_size, dspFlows_t dspFlow)
         for (i = 0; i < len; i++)
           {
             valint = (int16_t) (sbufout0[i] * 32768);
-            audio[i * 4 + 2] = (valint & 0x00ff);
-            audio[i * 4 + 3] = ((valint & 0xff00) >> 8);
+            audio_tmp[i] = (audio_tmp[i]&0xFFFF) + ((uint32_t)valint << 16);
           }
       }
       break;
