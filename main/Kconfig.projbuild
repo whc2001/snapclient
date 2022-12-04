@@ -31,6 +31,14 @@ menu "Snapcast Configuration"
         default "esp-snapclient"
         help
             Name of the client to register the snapserver.
+
+    config SNAPCLIENT_USE_SOFT_VOL
+        bool "Use software volume"
+        default false
+        depends on USE_DSP_PROCESSOR
+        help
+            Use software volume mixer instead of hardware mixer.
+
 endmenu
 
 menu "SNTP Configuration"

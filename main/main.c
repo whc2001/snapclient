@@ -103,6 +103,7 @@ static audio_board_handle_t board_handle = NULL;
 #endif
 #define SNAPCAST_BUFF_LEN CONFIG_SNAPCLIENT_BUFF_LEN
 #define SNAPCAST_CLIENT_NAME CONFIG_SNAPCLIENT_NAME
+#define SNAPCAST_USE_SOFT_VOL CONFIG_SNAPCLIENT_USE_SOFT_VOL
 
 /* Logging tag */
 static const char *TAG = "SC";
@@ -785,6 +786,7 @@ static void http_get_task(void *pvParameters) {
     uint32_t typedMsgLen = 0;
     uint32_t offset = 0;
     uint32_t tmpData = 0;
+    int flow_drain_counter = 0;
 
 #define BASE_MESSAGE_STATE 0
 #define TYPED_MESSAGE_STATE 1
@@ -1405,6 +1407,20 @@ static void http_get_task(void *pvParameters) {
                                 endTime = esp_timer_get_time();
 
 #if CONFIG_USE_DSP_PROCESSOR
+                                if (flow_drain_counter > 0) {
+                                    flow_drain_counter--;
+                                    double dynamic_vol = ((double)scSet.volume/100 / (20 - flow_drain_counter));
+                                    if (flow_drain_counter == 0) {
+#if SNAPCAST_USE_SOFT_VOL
+                                        dsp_set_vol(0.0);
+#else
+                                        dsp_set_vol(1.0);
+#endif
+                                        audio_hal_set_mute(board_handle->audio_hal,
+                                             server_settings_message.muted);
+                                    }
+                                    dsp_set_vol(dynamic_vol);
+                                }
                                 dsp_setup_flow(500, scSet.sr, scSet.chkDur_ms);
                                 dsp_processor(pcmData->fragment->payload,
                                               pcmData->fragment->size, dspFlow);
@@ -1443,6 +1459,20 @@ static void http_get_task(void *pvParameters) {
                               }
 
 #if CONFIG_USE_DSP_PROCESSOR
+                                if (flow_drain_counter > 0) {
+                                    flow_drain_counter--;
+                                    double dynamic_vol = ((double)scSet.volume/100 / (20 - flow_drain_counter));
+                                    if (flow_drain_counter == 0) {
+#if SNAPCAST_USE_SOFT_VOL
+                                        dsp_set_vol(0.0);
+#else
+                                        dsp_set_vol(1.0);
+#endif
+                                        audio_hal_set_mute(board_handle->audio_hal,
+                                             server_settings_message.muted);
+                                    }
+                                    dsp_set_vol(dynamic_vol);
+                                }
                               dsp_setup_flow(500, scSet.sr, scSet.chkDur_ms);
                               dsp_processor(pcmData->fragment->payload,
                                             pcmData->fragment->size, dspFlow);
@@ -1982,12 +2012,32 @@ static void http_get_task(void *pvParameters) {
                         // Volume setting using ADF HAL
                         // abstraction
                         if (scSet.muted != server_settings_message.muted) {
+#if CONFIG_USE_DSP_PROCESSOR
+                          if (server_settings_message.muted) {
+                            flow_drain_counter = 20;
+                          }
+                          else {
+                              flow_drain_counter = 0;
+                              audio_hal_set_mute(board_handle->audio_hal,
+                                             server_settings_message.muted);
+#if SNAPCAST_USE_SOFT_VOL
+                              dsp_set_vol((double)server_settings_message.volume/100);
+#else
+                              dsp_set_vol(1.0);
+#endif
+                          }
+#else
                           audio_hal_set_mute(board_handle->audio_hal,
                                              server_settings_message.muted);
+#endif
                         }
                         if (scSet.volume != server_settings_message.volume) {
+#if SNAPCAST_USE_SOFT_VOL
+                          dsp_set_vol((double)server_settings_message.volume/100);
+#else
                           audio_hal_set_volume(board_handle->audio_hal,
                                                server_settings_message.volume);
+#endif
                         }
 
                         scSet.cDacLat_ms = server_settings_message.latency;

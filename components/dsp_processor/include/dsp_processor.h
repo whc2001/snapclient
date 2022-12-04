@@ -42,5 +42,6 @@ typedef struct pnode {
 void dsp_setup_flow(double freq, uint32_t samplerate, uint32_t chunkDurationMs);
 int dsp_processor(char *audio, size_t chunk_size, dspFlows_t dspFlow);
 void dsp_set_xoverfreq(uint8_t, uint8_t, uint32_t);
+void dsp_set_vol(double volume);
 
 #endif /* _DSP_PROCESSOR_H_  */

@@ -37,10 +37,11 @@ static uint32_t currentChunkDurationMs = 0;
 
 static ptype_t bq[8];
 
+static double dynamic_vol = 1.0;
+
 int
 dsp_processor (char *audio, size_t chunk_size, dspFlows_t dspFlow)
 {
-  double dynamic_vol = 1.0;
   int16_t len = chunk_size / 4;
   int16_t valint;
   uint16_t i;
@@ -58,6 +59,17 @@ dsp_processor (char *audio, size_t chunk_size, dspFlows_t dspFlow)
     {
     case dspfStereo:
       {
+          //set volume
+          if (dynamic_vol != 1.0)
+            {
+              for (i = 0; i < len; i++)
+              {
+                audio_tmp[i] = ((uint32_t) (dynamic_vol
+                               * ((float)((int16_t)((audio_tmp[i] & 0xFFFF0000) >> 16)))) << 16)
+                               + (uint32_t) (dynamic_vol
+                               * ((float)((int16_t)(audio_tmp[i] & 0xFFFF))));
+              }
+            }
       }
       break;
 
@@ -372,6 +384,16 @@ dsp_set_xoverfreq (uint8_t freqh, uint8_t freql, uint32_t samplerate)
         default:
           break;
         }
+    }
+}
+
+void
+dsp_set_vol (double volume)
+{
+  if (volume >= 0 && volume <= 1.0)
+    {
+      ESP_LOGI (TAG, "Set volume to %f", volume);
+      dynamic_vol = volume;
     }
 }
 #endif
