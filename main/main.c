@@ -507,8 +507,8 @@ void flac_task(void *pvParameters) {
         }
 
 #if CONFIG_USE_DSP_PROCESSOR
-        dsp_setup_flow(500, scSet.sr, scSet.chkDur_ms);
-        dsp_processor(pcm_chunk_message.payload, pcm_chunk_message.size,
+        dsp_setup_flow(500, scSet->sr, scSet->chkDur_ms);
+        dsp_processor(pcmData->fragment->payload, pcmData->fragment->size,
                       dspFlow);
 #endif
 
@@ -1406,8 +1406,8 @@ static void http_get_task(void *pvParameters) {
 
 #if CONFIG_USE_DSP_PROCESSOR
                                 dsp_setup_flow(500, scSet.sr, scSet.chkDur_ms);
-                                dsp_processor(pcm_chunk_message.payload,
-                                              pcm_chunk_message.size, dspFlow);
+                                dsp_processor(pcmData->fragment->payload,
+                                              pcmData->fragment->size, dspFlow);
 #endif
 
                                 insert_pcm_chunk(pcmData);
@@ -1444,8 +1444,8 @@ static void http_get_task(void *pvParameters) {
 
 #if CONFIG_USE_DSP_PROCESSOR
                               dsp_setup_flow(500, scSet.sr, scSet.chkDur_ms);
-                              dsp_processor(pcm_chunk_message.payload,
-                                            pcm_chunk_message.size, dspFlow);
+                              dsp_processor(pcmData->fragment->payload,
+                                            pcmData->fragment->size, dspFlow);
 #endif
 
                               insert_pcm_chunk(pcmData);
