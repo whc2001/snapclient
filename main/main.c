@@ -1411,9 +1411,9 @@ static void http_get_task(void *pvParameters) {
                                     double dynamic_vol = ((double)scSet.volume/100 / (20 - flow_drain_counter));
                                     if (flow_drain_counter == 0) {
 #if SNAPCAST_USE_SOFT_VOL
-                                        dsp_set_vol(0.0);
+                                        dynamic_vol = 0;
 #else
-                                        dsp_set_vol(1.0);
+                                        dynamic_vol = 1;
 #endif
                                         audio_hal_set_mute(board_handle->audio_hal,
                                              server_settings_message.muted);
@@ -1463,9 +1463,9 @@ static void http_get_task(void *pvParameters) {
                                     double dynamic_vol = ((double)scSet.volume/100 / (20 - flow_drain_counter));
                                     if (flow_drain_counter == 0) {
 #if SNAPCAST_USE_SOFT_VOL
-                                        dsp_set_vol(0.0);
+                                        dynamic_vol = 0;
 #else
-                                        dsp_set_vol(1.0);
+                                        dynamic_vol = 1;
 #endif
                                         audio_hal_set_mute(board_handle->audio_hal,
                                              server_settings_message.muted);
