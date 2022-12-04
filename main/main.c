@@ -101,7 +101,6 @@ static audio_board_handle_t board_handle = NULL;
 #define SNAPCAST_SERVER_HOST CONFIG_SNAPSERVER_HOST
 #define SNAPCAST_SERVER_PORT CONFIG_SNAPSERVER_PORT
 #endif
-#define SNAPCAST_BUFF_LEN CONFIG_SNAPCLIENT_BUFF_LEN
 #define SNAPCAST_CLIENT_NAME CONFIG_SNAPCLIENT_NAME
 #define SNAPCAST_USE_SOFT_VOL CONFIG_SNAPCLIENT_USE_SOFT_VOL
 
@@ -723,7 +722,7 @@ static void http_get_task(void *pvParameters) {
 
     // init hello message
     hello_message.mac = mac_address;
-    hello_message.hostname = "ESP32-Caster";
+    hello_message.hostname = SNAPCAST_CLIENT_NAME;
     hello_message.version = (char *)VERSION_STRING;
     hello_message.client_name = "libsnapcast";
     hello_message.os = "esp32";
