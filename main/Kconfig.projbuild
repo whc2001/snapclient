@@ -33,6 +33,22 @@ menu "Snapcast Configuration"
         help
             Use software volume mixer instead of hardware mixer.
 
+    choice SNAPCLIENT_DSP_FLOW
+        prompt "DSP flow"
+        default SNAPCLIENT_DSP_FLOW_STEREO
+        help
+            Select the DSP flow to use.
+
+        config SNAPCLIENT_DSP_FLOW_STEREO
+            bool "Stereo flow"
+
+        config SNAPCLIENT_DSP_FLOW_BASSBOOST
+            bool "Bassboost flow"
+
+        config SNAPCLIENT_DSP_FLOW_BIAMP
+            bool "Bi-Amp flow"
+    endchoice
+
 endmenu
 
 menu "SNTP Configuration"

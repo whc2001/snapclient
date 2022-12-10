@@ -113,7 +113,15 @@ extern char mac_address[18];
 SemaphoreHandle_t timeSyncSemaphoreHandle = NULL;
 
 #if CONFIG_USE_DSP_PROCESSOR
-uint8_t dspFlow = dspfStereo;  // dspfBiamp; // dspfStereo; // dspfBassBoost;
+#if CONFIG_SNAPCLIENT_DSP_FLOW_STEREO
+dspFlows_t dspFlow = dspfStereo;  // dspfBiamp; // dspfStereo; // dspfBassBoost;
+#endif
+#if CONFIG_SNAPCLIENT_DSP_FLOW_BASSBOOST
+dspFlows_t dspFlow = dspfBassBoost;
+#endif
+#if CONFIG_SNAPCLIENT_DSP_FLOW_BIAMP
+dspFlows_t dspFlow = dspfBiamp;
+#endif
 #endif
 
 typedef struct flacData_s {
