@@ -309,8 +309,8 @@ static FLAC__StreamDecoderWriteStatus write_callback(
   // flacData->outData = (char *)malloc (flacData->bytes);
   ret = allocate_pcm_chunk_memory(&(flacData->outData), flacData->bytes);
 
-  // ESP_LOGI (TAG, "mem %p %p %d", flacData->outData,
-  // flacData->outData->fragment->payload, flacData->bytes);
+  //   ESP_LOGI (TAG, "mem %p %p %d", flacData->outData,
+  //   flacData->outData->fragment->payload, flacData->bytes);
 
   if (ret == 0) {
     pcm_chunk_fragment_t *fragment = flacData->outData->fragment;
@@ -1394,6 +1394,12 @@ static void http_get_task(void *pvParameters) {
 
                                 size_t decodedSize =
                                     pcmData->totalSize;  // pFlacData->bytes;
+
+                                //                                ESP_LOGE(TAG,
+                                //                                "decoded size:
+                                //                                %d",
+                                //                                decodedSize);
+
                                 scSet.chkDur_ms =
                                     (1000UL * decodedSize) /
                                     (uint32_t)(scSet.ch * (scSet.bits / 8)) /
@@ -1415,18 +1421,21 @@ static void http_get_task(void *pvParameters) {
 
 #if CONFIG_USE_DSP_PROCESSOR
                                 if (flow_drain_counter > 0) {
-                                    flow_drain_counter--;
-                                    double dynamic_vol = ((double)scSet.volume/100 / (20 - flow_drain_counter));
-                                    if (flow_drain_counter == 0) {
+                                  flow_drain_counter--;
+                                  double dynamic_vol =
+                                      ((double)scSet.volume / 100 /
+                                       (20 - flow_drain_counter));
+                                  if (flow_drain_counter == 0) {
 #if SNAPCAST_USE_SOFT_VOL
-                                        dynamic_vol = 0;
+                                    dynamic_vol = 0;
 #else
-                                        dynamic_vol = 1;
+                                    dynamic_vol = 1;
 #endif
-                                        audio_hal_set_mute(board_handle->audio_hal,
-                                             server_settings_message.muted);
-                                    }
-                                    dsp_set_vol(dynamic_vol);
+                                    audio_hal_set_mute(
+                                        board_handle->audio_hal,
+                                        server_settings_message.muted);
+                                  }
+                                  dsp_set_vol(dynamic_vol);
                                 }
                                 dsp_setup_flow(500, scSet.sr, scSet.chkDur_ms);
                                 dsp_processor(pcmData->fragment->payload,
@@ -1466,20 +1475,23 @@ static void http_get_task(void *pvParameters) {
                               }
 
 #if CONFIG_USE_DSP_PROCESSOR
-                                if (flow_drain_counter > 0) {
-                                    flow_drain_counter--;
-                                    double dynamic_vol = ((double)scSet.volume/100 / (20 - flow_drain_counter));
-                                    if (flow_drain_counter == 0) {
+                              if (flow_drain_counter > 0) {
+                                flow_drain_counter--;
+                                double dynamic_vol =
+                                    ((double)scSet.volume / 100 /
+                                     (20 - flow_drain_counter));
+                                if (flow_drain_counter == 0) {
 #if SNAPCAST_USE_SOFT_VOL
-                                        dynamic_vol = 0;
+                                  dynamic_vol = 0;
 #else
-                                        dynamic_vol = 1;
+                                  dynamic_vol = 1;
 #endif
-                                        audio_hal_set_mute(board_handle->audio_hal,
-                                             server_settings_message.muted);
-                                    }
-                                    dsp_set_vol(dynamic_vol);
+                                  audio_hal_set_mute(
+                                      board_handle->audio_hal,
+                                      server_settings_message.muted);
                                 }
+                                dsp_set_vol(dynamic_vol);
+                              }
                               dsp_setup_flow(500, scSet.sr, scSet.chkDur_ms);
                               dsp_processor(pcmData->fragment->payload,
                                             pcmData->fragment->size, dspFlow);
@@ -2022,15 +2034,15 @@ static void http_get_task(void *pvParameters) {
 #if CONFIG_USE_DSP_PROCESSOR
                           if (server_settings_message.muted) {
                             flow_drain_counter = 20;
-                          }
-                          else {
-                              flow_drain_counter = 0;
-                              audio_hal_set_mute(board_handle->audio_hal,
-                                             server_settings_message.muted);
+                          } else {
+                            flow_drain_counter = 0;
+                            audio_hal_set_mute(board_handle->audio_hal,
+                                               server_settings_message.muted);
 #if SNAPCAST_USE_SOFT_VOL
-                              dsp_set_vol((double)server_settings_message.volume/100);
+                            dsp_set_vol((double)server_settings_message.volume /
+                                        100);
 #else
-                              dsp_set_vol(1.0);
+                            dsp_set_vol(1.0);
 #endif
                           }
 #else
@@ -2040,7 +2052,8 @@ static void http_get_task(void *pvParameters) {
                         }
                         if (scSet.volume != server_settings_message.volume) {
 #if SNAPCAST_USE_SOFT_VOL
-                          dsp_set_vol((double)server_settings_message.volume/100);
+                          dsp_set_vol((double)server_settings_message.volume /
+                                      100);
 #else
                           audio_hal_set_volume(board_handle->audio_hal,
                                                server_settings_message.volume);

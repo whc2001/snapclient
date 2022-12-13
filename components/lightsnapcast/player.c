@@ -253,7 +253,7 @@ int init_player(void) {
   currentSnapcastSetting.buf_ms = 1000;
   currentSnapcastSetting.chkDur_ms = 20;
   currentSnapcastSetting.codec = NONE;
-  currentSnapcastSetting.sr = 44100;
+  currentSnapcastSetting.sr = 48000;
   currentSnapcastSetting.ch = 2;
   currentSnapcastSetting.bits = 16;
   currentSnapcastSetting.muted = false;
@@ -712,14 +712,35 @@ int32_t allocate_pcm_chunk_memory_caps(pcm_chunk_message_t *pcmChunk,
   // first we try to allocated 32 bit aligned memory for payload
   // check available memory first so we can decide if we need to fragment the
   // data
-  freeMem = heap_caps_get_free_size(caps);
-  largestFreeBlock = heap_caps_get_largest_free_block(caps);
-  if ((freeMem >= bytes) && (largestFreeBlock >= bytes)) {
-    // ESP_LOGI(TAG, "32b f %d b %d", freeMem, largestFreeBlock);
+  if (caps != 0) {
+    freeMem = heap_caps_get_free_size(caps);
+    largestFreeBlock = heap_caps_get_largest_free_block(caps);
+    if ((freeMem >= bytes) && (largestFreeBlock >= bytes)) {
+      // ESP_LOGI(TAG, "32b f %d b %d", freeMem, largestFreeBlock);
 
-    pcmChunk->fragment->payload = (char *)heap_caps_malloc(bytes, caps);
+      pcmChunk->fragment->payload = (char *)heap_caps_malloc(bytes, caps);
+      if (pcmChunk->fragment->payload == NULL) {
+        ESP_LOGE(
+            TAG,
+            "Failed to heap_caps_malloc(%d, %d) memory for pcm chunk payload",
+            bytes, caps);
+
+        ret = -2;
+      } else {
+        pcmChunk->totalSize = bytes;
+        pcmChunk->fragment->nextFragment = NULL;
+        pcmChunk->fragment->size = bytes;
+
+        ret = 0;
+      }
+    } else {
+      // ESP_LOGE (TAG, "couldn't get memory to insert chunk of size %d, IRAM
+      // freemem: %d blocksize %d", bytes, freeMem, largestFreeBlock);
+    }
+  } else {
+    pcmChunk->fragment->payload = (char *)malloc(bytes);
     if (pcmChunk->fragment->payload == NULL) {
-      ESP_LOGE(TAG, "Failed to allocate IRAM memory for pcm chunk payload");
+      ESP_LOGE(TAG, "Failed to malloc memory for pcm chunk payload");
 
       ret = -2;
     } else {
@@ -729,9 +750,6 @@ int32_t allocate_pcm_chunk_memory_caps(pcm_chunk_message_t *pcmChunk,
 
       ret = 0;
     }
-  } else {
-    // ESP_LOGE (TAG, "couldn't get memory to insert chunk of size %d, IRAM
-    // freemem: %d blocksize %d", bytes, freeMem, largestFreeBlock);
   }
 
   return ret;
@@ -850,44 +868,52 @@ int32_t allocate_pcm_chunk_memory(pcm_chunk_message_t **pcmChunk,
     return -2;
   }
 
+  //#if CONFIG_SPIRAM && CONFIG_SPIRAM_BOOT_INIT
+  //  (*pcmChunk)->fragment->payload =
+  //      (char *)heap_caps_malloc(bytes, MALLOC_CAP_8BIT | MALLOC_CAP_SPIRAM);
+  //  if ((*pcmChunk)->fragment->payload == NULL) {
+  //    //  size_t largestFreeBlock, freeMem;
+  //    //	ESP_LOGE (TAG, "Failed to allocate memory for pcm chunk fragment
+  //    // payload"); 	free_pcm_chunk (pcmChunk);
+  //    //  freeMem = heap_caps_get_free_size (MALLOC_CAP_8BIT |
+  //    MALLOC_CAP_SPIRAM);
+  //
+  //    ret = -2;
+  //  } else {
+  //    (*pcmChunk)->fragment->nextFragment = NULL;
+  //    (*pcmChunk)->fragment->size = bytes;
+  //
+  //    ret = 0;
+  //  }
+  //#elif CONFIG_SPIRAM
+  //  (*pcmChunk)->fragment->payload = (char *)malloc(bytes);
+  //  if ((*pcmChunk)->fragment->payload == NULL) {
+  //    //  size_t largestFreeBlock, freeMem;
+  //    //  ESP_LOGE (TAG, "Failed to allocate memory for pcm chunk fragment
+  //    // payload");   free_pcm_chunk (pcmChunk);
+  //    //  freeMem = heap_caps_get_free_size (MALLOC_CAP_8BIT |
+  //    MALLOC_CAP_SPIRAM);
+  //
+  //    ret = -2;
+  //  } else {
+  //    (*pcmChunk)->fragment->nextFragment = NULL;
+  //    (*pcmChunk)->fragment->size = bytes;
+  //
+  //    ret = 0;
+  //  }
+  //#else
 #if CONFIG_SPIRAM && CONFIG_SPIRAM_BOOT_INIT
-  (*pcmChunk)->fragment->payload =
-      (char *)heap_caps_malloc(bytes, MALLOC_CAP_8BIT | MALLOC_CAP_SPIRAM);
-  if ((*pcmChunk)->fragment->payload == NULL) {
-    //  size_t largestFreeBlock, freeMem;
-    //	ESP_LOGE (TAG, "Failed to allocate memory for pcm chunk fragment
-    // payload"); 	free_pcm_chunk (pcmChunk);
-    //  freeMem = heap_caps_get_free_size (MALLOC_CAP_8BIT | MALLOC_CAP_SPIRAM);
-
-    ret = -2;
-  } else {
-    (*pcmChunk)->fragment->nextFragment = NULL;
-    (*pcmChunk)->fragment->size = bytes;
-
-    ret = 0;
-  }
+  ret = allocate_pcm_chunk_memory_caps(*pcmChunk, bytes,
+                                       MALLOC_CAP_8BIT | MALLOC_CAP_SPIRAM);
 #elif CONFIG_SPIRAM
-  (*pcmChunk)->fragment->payload = (char *)malloc(bytes);
-  if ((*pcmChunk)->fragment->payload == NULL) {
-    //  size_t largestFreeBlock, freeMem;
-    //  ESP_LOGE (TAG, "Failed to allocate memory for pcm chunk fragment
-    // payload");   free_pcm_chunk (pcmChunk);
-    //  freeMem = heap_caps_get_free_size (MALLOC_CAP_8BIT | MALLOC_CAP_SPIRAM);
-
-    ret = -2;
-  } else {
-    (*pcmChunk)->fragment->nextFragment = NULL;
-    (*pcmChunk)->fragment->size = bytes;
-
-    ret = 0;
-  }
+  ret = allocate_pcm_chunk_memory_caps(*pcmChunk, bytes, 0);
 #else
   ret = allocate_pcm_chunk_memory_caps(*pcmChunk, bytes,
                                        MALLOC_CAP_32BIT | MALLOC_CAP_EXEC);
   if (ret < 0) {
     ret = allocate_pcm_chunk_memory_caps(*pcmChunk, bytes, MALLOC_CAP_8BIT);
     if (ret < 0) {
-      //		  ret = allocate_pcm_chunk_memory_caps_fragmented
+      //      ret = allocate_pcm_chunk_memory_caps_fragmented
       //(*pcmChunk, bytes, MALLOC_CAP_32BIT | MALLOC_CAP_EXEC);
       if (ret < 0) {
         // allocate_pcm_chunk_memory_caps_fragmented (*pcmChunk, bytes,
@@ -896,6 +922,8 @@ int32_t allocate_pcm_chunk_memory(pcm_chunk_message_t **pcmChunk,
     }
   }
 #endif
+
+  //#endif
 
   if (ret < 0) {
     ESP_LOGE(TAG, "couldn't get memory to insert chunk");
@@ -1020,26 +1048,26 @@ static void player_task(void *pvParameters) {
       // so next chunk we get from queue will be -20ms
       outputBufferDacTime = chkDur_us * CHNK_CTRL_CNT;
 
-      if ((scSet.sr != __scSet.sr) || (scSet.bits != __scSet.bits) ||
-          (scSet.ch != __scSet.ch)) {
-        i2s_custom_stop(I2S_NUM_0);
+      if ((__scSet.buf_ms > 0) && (__scSet.chkDur_ms > 0)) {
+        if ((scSet.sr != __scSet.sr) || (scSet.bits != __scSet.bits) ||
+            (scSet.ch != __scSet.ch)) {
+          i2s_custom_stop(I2S_NUM_0);
 
-        ret = player_setup_i2s(I2S_NUM_0, &currentSnapcastSetting);
-        if (ret < 0) {
-          ESP_LOGE(TAG, "player_setup_i2s failed: %d", ret);
+          ret = player_setup_i2s(I2S_NUM_0, &currentSnapcastSetting);
+          if (ret < 0) {
+            ESP_LOGE(TAG, "player_setup_i2s failed: %d", ret);
 
-          return;
+            return;
+          }
+
+          // force adjust_apll() to set playback speed
+          currentDir = 1;
+          adjust_apll(0);
+
+          i2s_custom_set_clk(I2S_NUM_0, __scSet.sr, __scSet.bits, __scSet.ch);
+          initialSync = 0;
         }
 
-        // force adjust_apll() to set playback speed
-        currentDir = 1;
-        adjust_apll(0);
-
-        i2s_custom_set_clk(I2S_NUM_0, __scSet.sr, __scSet.bits, __scSet.ch);
-        initialSync = 0;
-      }
-
-      if ((__scSet.buf_ms > 0) && (__scSet.chkDur_ms > 0)) {
         if ((__scSet.buf_ms != scSet.buf_ms) ||
             (__scSet.chkDur_ms != scSet.chkDur_ms)) {
           if (pcmChkQHdl != NULL) {
