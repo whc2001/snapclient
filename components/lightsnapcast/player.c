@@ -850,13 +850,28 @@ int32_t allocate_pcm_chunk_memory(pcm_chunk_message_t **pcmChunk,
     return -2;
   }
 
-#if CONFIG_USE_PSRAM
+#if CONFIG_SPIRAM && CONFIG_SPIRAM_BOOT_INIT
   (*pcmChunk)->fragment->payload =
       (char *)heap_caps_malloc(bytes, MALLOC_CAP_8BIT | MALLOC_CAP_SPIRAM);
   if ((*pcmChunk)->fragment->payload == NULL) {
     //  size_t largestFreeBlock, freeMem;
     //	ESP_LOGE (TAG, "Failed to allocate memory for pcm chunk fragment
     // payload"); 	free_pcm_chunk (pcmChunk);
+    //  freeMem = heap_caps_get_free_size (MALLOC_CAP_8BIT | MALLOC_CAP_SPIRAM);
+
+    ret = -2;
+  } else {
+    (*pcmChunk)->fragment->nextFragment = NULL;
+    (*pcmChunk)->fragment->size = bytes;
+
+    ret = 0;
+  }
+#elif CONFIG_SPIRAM
+  (*pcmChunk)->fragment->payload = (char *)malloc(bytes);
+  if ((*pcmChunk)->fragment->payload == NULL) {
+    //  size_t largestFreeBlock, freeMem;
+    //  ESP_LOGE (TAG, "Failed to allocate memory for pcm chunk fragment
+    // payload");   free_pcm_chunk (pcmChunk);
     //  freeMem = heap_caps_get_free_size (MALLOC_CAP_8BIT | MALLOC_CAP_SPIRAM);
 
     ret = -2;
