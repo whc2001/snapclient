@@ -13,7 +13,7 @@
 // size?!
 #define CHNK_CTRL_CNT 2
 
-#define LATENCY_MEDIAN_FILTER_LEN 199  // 199  // 29  // 99
+#define LATENCY_MEDIAN_FILTER_LEN 199  // 299 //499  // 199  // 29  // 99
 
 #define SHORT_BUFFER_LEN 99
 #define MINI_BUFFER_LEN 19

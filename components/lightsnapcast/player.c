@@ -1263,9 +1263,10 @@ static void player_task(void *pvParameters) {
 
       const bool enableControlLoop = true;
 
-      const int64_t shortOffset = 100;             //µs, softsync
-      const int64_t miniOffset = shortOffset / 2;  // 50;    //µs, softsync
-      const int64_t hardResyncThreshold = 10000;   //µs, hard sync
+      const int64_t shortOffset = 8;  // 20;             //µs, softsync
+      const int64_t miniOffset =
+          1;  // shortOffset / 2;  // 50;    //µs, softsync
+      const int64_t hardResyncThreshold = 10000;  //µs, hard sync
 
       if (initialSync == 1) {
         avg = age;
@@ -1343,8 +1344,9 @@ static void player_task(void *pvParameters) {
           msec = usec / 1000;
           usec = usec % 1000;
           // ESP_LOGI (TAG, "%d, %lldus, %lldus %llds, %lld.%lldms", dir, age,
-          // avg, sec, msec, usec); ESP_LOGI (TAG, "%d, %lldus, %lldus, %lldus",
-          // dir, avg, shortMedian, miniMedian);
+          // avg, sec, msec, usec);
+          // ESP_LOGI (TAG, "%d, %lldus, %lldus, %lldus", dir, avg, shortMedian,
+          // miniMedian);
         }
 
         dir = 0;
