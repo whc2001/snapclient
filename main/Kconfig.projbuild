@@ -25,37 +25,4 @@ menu "Snapcast Configuration"
         default "ESP32-Caster"
         help
             Name of the client to register the snapserver.
-
-    config SNAPCLIENT_USE_SOFT_VOL
-        bool "Use software volume"
-        default false
-        depends on USE_DSP_PROCESSOR
-        help
-            Use software volume mixer instead of hardware mixer.
-
-    choice SNAPCLIENT_DSP_FLOW
-        prompt "DSP flow"
-        default SNAPCLIENT_DSP_FLOW_STEREO
-        help
-            Select the DSP flow to use.
-
-        config SNAPCLIENT_DSP_FLOW_STEREO
-            bool "Stereo flow"
-
-        config SNAPCLIENT_DSP_FLOW_BASSBOOST
-            bool "Bassboost flow"
-
-        config SNAPCLIENT_DSP_FLOW_BIAMP
-            bool "Bi-Amp flow"
-    endchoice
-
-endmenu
-
-menu "SNTP Configuration"
-
-    config SNPACLIENT_SNTP_ENABLE
-        bool "Enable SNTP"
-        default true
-        help
-            Enable the setup of RTC time using the SNTP protocol.
 endmenu

@@ -67,8 +67,6 @@ static TaskHandle_t playerTaskHandle = NULL;
 
 static QueueHandle_t snapcastSettingQueueHandle = NULL;
 
-static size_t chkInBytes;
-
 static uint32_t i2sDmaBufCnt;
 static uint32_t i2sDmaBufMaxLen;
 
@@ -93,19 +91,13 @@ static void player_task(void *pvParameters);
  */
 static esp_err_t player_setup_i2s(i2s_port_t i2sNum,
                                   snapcastSetting_t *setting) {
-  int chunkInFrames;
   int __dmaBufCnt;
   int __dmaBufLen;
   const int __dmaBufMaxLen = 1024;
   int m_scale = 8, fi2s_clk;
 
-  chkInBytes =
-      (setting->chkDur_ms * setting->sr * setting->ch * (setting->bits / 8)) /
-      1000;
-  chunkInFrames = chkInBytes / (setting->ch * (setting->bits / 8));
-
   __dmaBufCnt = 1;
-  __dmaBufLen = chunkInFrames;
+  __dmaBufLen = setting->chkInFrames;
   while ((__dmaBufLen >= __dmaBufMaxLen) || (__dmaBufCnt <= 1)) {
     if ((__dmaBufLen % 2) == 0) {
       __dmaBufCnt *= 2;
@@ -251,7 +243,7 @@ int init_player(void) {
   int ret = 0;
 
   currentSnapcastSetting.buf_ms = 1000;
-  currentSnapcastSetting.chkDur_ms = 20;
+  currentSnapcastSetting.chkInFrames = 1152;
   currentSnapcastSetting.codec = NONE;
   currentSnapcastSetting.sr = 48000;
   currentSnapcastSetting.ch = 2;
@@ -373,7 +365,8 @@ int32_t player_send_snapcast_setting(snapcastSetting_t *setting) {
   ret = player_get_snapcast_settings(&curSet);
 
   if ((curSet.bits != setting->bits) || (curSet.buf_ms != setting->buf_ms) ||
-      (curSet.ch != setting->ch) || (curSet.chkDur_ms != setting->chkDur_ms) ||
+      (curSet.ch != setting->ch) ||
+      (curSet.chkInFrames != setting->chkInFrames) ||
       (curSet.codec != setting->codec) || (curSet.muted != setting->muted) ||
       (curSet.sr != setting->sr) || (curSet.volume != setting->volume) ||
       (curSet.cDacLat_ms != setting->cDacLat_ms)) {
@@ -383,7 +376,7 @@ int32_t player_send_snapcast_setting(snapcastSetting_t *setting) {
          (curSet.volume != setting->volume)) &&
         ((curSet.bits == setting->bits) && (curSet.buf_ms == setting->buf_ms) &&
          (curSet.ch == setting->ch) &&
-         (curSet.chkDur_ms == setting->chkDur_ms) &&
+         (curSet.chkInFrames == setting->chkInFrames) &&
          (curSet.codec == setting->codec) && (curSet.sr == setting->sr) &&
          (curSet.cDacLat_ms == setting->cDacLat_ms))) {
       // no notify needed, only set changed parameters
@@ -868,40 +861,6 @@ int32_t allocate_pcm_chunk_memory(pcm_chunk_message_t **pcmChunk,
     return -2;
   }
 
-  //#if CONFIG_SPIRAM && CONFIG_SPIRAM_BOOT_INIT
-  //  (*pcmChunk)->fragment->payload =
-  //      (char *)heap_caps_malloc(bytes, MALLOC_CAP_8BIT | MALLOC_CAP_SPIRAM);
-  //  if ((*pcmChunk)->fragment->payload == NULL) {
-  //    //  size_t largestFreeBlock, freeMem;
-  //    //	ESP_LOGE (TAG, "Failed to allocate memory for pcm chunk fragment
-  //    // payload"); 	free_pcm_chunk (pcmChunk);
-  //    //  freeMem = heap_caps_get_free_size (MALLOC_CAP_8BIT |
-  //    MALLOC_CAP_SPIRAM);
-  //
-  //    ret = -2;
-  //  } else {
-  //    (*pcmChunk)->fragment->nextFragment = NULL;
-  //    (*pcmChunk)->fragment->size = bytes;
-  //
-  //    ret = 0;
-  //  }
-  //#elif CONFIG_SPIRAM
-  //  (*pcmChunk)->fragment->payload = (char *)malloc(bytes);
-  //  if ((*pcmChunk)->fragment->payload == NULL) {
-  //    //  size_t largestFreeBlock, freeMem;
-  //    //  ESP_LOGE (TAG, "Failed to allocate memory for pcm chunk fragment
-  //    // payload");   free_pcm_chunk (pcmChunk);
-  //    //  freeMem = heap_caps_get_free_size (MALLOC_CAP_8BIT |
-  //    MALLOC_CAP_SPIRAM);
-  //
-  //    ret = -2;
-  //  } else {
-  //    (*pcmChunk)->fragment->nextFragment = NULL;
-  //    (*pcmChunk)->fragment->size = bytes;
-  //
-  //    ret = 0;
-  //  }
-  //#else
 #if CONFIG_SPIRAM && CONFIG_SPIRAM_BOOT_INIT
   ret = allocate_pcm_chunk_memory_caps(*pcmChunk, bytes,
                                        MALLOC_CAP_8BIT | MALLOC_CAP_SPIRAM);
@@ -922,8 +881,6 @@ int32_t allocate_pcm_chunk_memory(pcm_chunk_message_t **pcmChunk,
     }
   }
 #endif
-
-  //#endif
 
   if (ret < 0) {
     ESP_LOGE(TAG, "couldn't get memory to insert chunk");
@@ -1037,10 +994,8 @@ static void player_task(void *pvParameters) {
 
       buf_us = (int64_t)(__scSet.buf_ms) * 1000LL;
 
-      chkDur_us = (int64_t)(__scSet.chkDur_ms) * 1000LL;
-      chkInBytes =
-          (__scSet.chkDur_ms * __scSet.sr * __scSet.ch * (__scSet.bits / 8)) /
-          1000;
+      chkDur_us =
+          (int64_t)__scSet.chkInFrames * (int64_t)1E6 / (int64_t)__scSet.sr;
       clientDacLatency_us = (int64_t)__scSet.cDacLat_ms * 1000;
 
       // this value is highly coupled with I2S DMA buffer
@@ -1048,7 +1003,7 @@ static void player_task(void *pvParameters) {
       // so next chunk we get from queue will be -20ms
       outputBufferDacTime = chkDur_us * CHNK_CTRL_CNT;
 
-      if ((__scSet.buf_ms > 0) && (__scSet.chkDur_ms > 0)) {
+      if ((__scSet.buf_ms > 0) && (__scSet.chkInFrames > 0)) {
         if ((scSet.sr != __scSet.sr) || (scSet.bits != __scSet.bits) ||
             (scSet.ch != __scSet.ch)) {
           i2s_custom_stop(I2S_NUM_0);
@@ -1069,14 +1024,15 @@ static void player_task(void *pvParameters) {
         }
 
         if ((__scSet.buf_ms != scSet.buf_ms) ||
-            (__scSet.chkDur_ms != scSet.chkDur_ms)) {
+            (__scSet.chkInFrames != scSet.chkInFrames)) {
           if (pcmChkQHdl != NULL) {
             destroy_pcm_queue(&pcmChkQHdl);
           }
         }
 
         if (pcmChkQHdl == NULL) {
-          int entries = ceil((float)__scSet.buf_ms / (float)__scSet.chkDur_ms);
+          int entries = ceil(((float)__scSet.sr / (float)__scSet.chkInFrames) *
+                             ((float)__scSet.buf_ms / 1000));
 
           pcmChkQHdl = xQueueCreate(entries, sizeof(pcm_chunk_message_t *));
 
@@ -1085,9 +1041,9 @@ static void player_task(void *pvParameters) {
       }
 
       ESP_LOGI(TAG,
-               "snapserver config changed, buffer %dms, chunk %dms, "
+               "snapserver config changed, buffer %dms, chunk %d frames, "
                "sample rate %d, ch %d, bits %d mute %d latency %d",
-               __scSet.buf_ms, __scSet.chkDur_ms, __scSet.sr, __scSet.ch,
+               __scSet.buf_ms, __scSet.chkInFrames, __scSet.sr, __scSet.ch,
                __scSet.bits, __scSet.muted, __scSet.cDacLat_ms);
 
       scSet = __scSet;  // store for next round

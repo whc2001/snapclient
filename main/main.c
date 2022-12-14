@@ -114,7 +114,8 @@ SemaphoreHandle_t timeSyncSemaphoreHandle = NULL;
 
 #if CONFIG_USE_DSP_PROCESSOR
 #if CONFIG_SNAPCLIENT_DSP_FLOW_STEREO
-dspFlows_t dspFlow = dspfStereo;  // dspfBiamp; // dspfStereo; // dspfBassBoost;
+// dspFlows_t dspFlow = dspfStereo;  // dspfBiamp; // dspfStereo; //
+// dspfBassBoost;
 #endif
 #if CONFIG_SNAPCLIENT_DSP_FLOW_BASSBOOST
 dspFlows_t dspFlow = dspfBassBoost;
@@ -499,9 +500,8 @@ void flac_task(void *pvParameters) {
         pcmData->timestamp = currentTimestamp;
 
         size_t decodedSize = pcmData->totalSize;  // pFlacData->bytes;
-        scSet->chkDur_ms = (1000UL * decodedSize) /
-                           (uint32_t)(scSet->ch * (scSet->bits / 8)) /
-                           scSet->sr;
+        scSet->chkInFrames =
+            decodedSize / ((size_t)scSet->ch * (size_t)(scSet->bits / 8));
         if (player_send_snapcast_setting(scSet) != pdPASS) {
           ESP_LOGE(TAG,
                    "Failed to "
@@ -515,7 +515,7 @@ void flac_task(void *pvParameters) {
         }
 
 #if CONFIG_USE_DSP_PROCESSOR
-        dsp_setup_flow(500, scSet->sr, scSet->chkDur_ms);
+        dsp_setup_flow(500, scSet->sr, scSet->chkInFrames);
         dsp_processor(pcmData->fragment->payload, pcmData->fragment->size,
                       dspFlow);
 #endif
@@ -781,7 +781,7 @@ static void http_get_task(void *pvParameters) {
     scSet.bits = 0;
     scSet.ch = 0;
     scSet.sr = 0;
-    scSet.chkDur_ms = 0;
+    scSet.chkInFrames = 0;
     scSet.volume = 0;
     scSet.muted = true;
 
@@ -1400,10 +1400,9 @@ static void http_get_task(void *pvParameters) {
                                 //                                %d",
                                 //                                decodedSize);
 
-                                scSet.chkDur_ms =
-                                    (1000UL * decodedSize) /
-                                    (uint32_t)(scSet.ch * (scSet.bits / 8)) /
-                                    scSet.sr;
+                                scSet.chkInFrames =
+                                    decodedSize / ((size_t)scSet.ch *
+                                                   (size_t)(scSet.bits / 8));
                                 if (player_send_snapcast_setting(&scSet) !=
                                     pdPASS) {
                                   ESP_LOGE(TAG,
@@ -1437,7 +1436,8 @@ static void http_get_task(void *pvParameters) {
                                   }
                                   dsp_set_vol(dynamic_vol);
                                 }
-                                dsp_setup_flow(500, scSet.sr, scSet.chkDur_ms);
+                                dsp_setup_flow(500, scSet.sr,
+                                               scSet.chkInFrames);
                                 dsp_processor(pcmData->fragment->payload,
                                               pcmData->fragment->size, dspFlow);
 #endif
@@ -1459,10 +1459,10 @@ static void http_get_task(void *pvParameters) {
 
                               pcmData->timestamp = wire_chnk.timestamp;
 
-                              scSet.chkDur_ms =
-                                  (1000UL * decodedSize) /
-                                  (uint32_t)(scSet.ch * (scSet.bits / 8)) /
-                                  scSet.sr;
+                              scSet.chkInFrames =
+                                  decodedSize /
+                                  ((size_t)scSet.ch * (size_t)(scSet.bits / 8));
+
                               if (player_send_snapcast_setting(&scSet) !=
                                   pdPASS) {
                                 ESP_LOGE(TAG,
@@ -1492,7 +1492,7 @@ static void http_get_task(void *pvParameters) {
                                 }
                                 dsp_set_vol(dynamic_vol);
                               }
-                              dsp_setup_flow(500, scSet.sr, scSet.chkDur_ms);
+                              dsp_setup_flow(500, scSet.sr, scSet.chkInFrames);
                               dsp_processor(pcmData->fragment->payload,
                                             pcmData->fragment->size, dspFlow);
 #endif
