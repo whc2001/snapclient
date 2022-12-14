@@ -883,7 +883,9 @@ int32_t allocate_pcm_chunk_memory(pcm_chunk_message_t **pcmChunk,
 #endif
 
   if (ret < 0) {
-    ESP_LOGE(TAG, "couldn't get memory to insert chunk");
+    ESP_LOGW(TAG,
+             "couldn't get memory to insert chunk, inserting an chunk "
+             "containing just 0");
 
     ESP_LOGI(
         TAG, "%d, %d, %d, %d, %d", heap_caps_get_free_size(MALLOC_CAP_8BIT),
@@ -950,7 +952,7 @@ static void player_task(void *pvParameters) {
   int64_t serverNow = 0;
   int64_t age;
   BaseType_t ret;
-  int64_t chkDur_us;
+  int64_t chkDur_us = 24000;
   char *p_payload = NULL;
   size_t size = 0;
   uint32_t notifiedValue;
@@ -964,7 +966,7 @@ static void player_task(void *pvParameters) {
   pcm_chunk_fragment_t *fragment = NULL;
   size_t written;
   bool gotSnapserverConfig = false;
-  int64_t clientDacLatency_us;
+  int64_t clientDacLatency_us = 0;
   int64_t diff2Server;
   int64_t outputBufferDacTime = 0;
 
@@ -992,18 +994,22 @@ static void player_task(void *pvParameters) {
 
       player_get_snapcast_settings(&__scSet);
 
-      buf_us = (int64_t)(__scSet.buf_ms) * 1000LL;
+      if ((__scSet.buf_ms > 0) && (__scSet.chkInFrames > 0) &&
+          (__scSet.sr > 0)) {
+        buf_us = (int64_t)(__scSet.buf_ms) * 1000LL;
 
-      chkDur_us =
-          (int64_t)__scSet.chkInFrames * (int64_t)1E6 / (int64_t)__scSet.sr;
-      clientDacLatency_us = (int64_t)__scSet.cDacLat_ms * 1000;
+        ESP_LOGE(TAG, "%d, SR %d", __scSet.chkInFrames, __scSet.sr);
 
-      // this value is highly coupled with I2S DMA buffer
-      // size. DMA buffer has a size of 1 chunk (e.g. 20ms)
-      // so next chunk we get from queue will be -20ms
-      outputBufferDacTime = chkDur_us * CHNK_CTRL_CNT;
+        chkDur_us =
+            (int64_t)__scSet.chkInFrames * (int64_t)1E6 / (int64_t)__scSet.sr;
 
-      if ((__scSet.buf_ms > 0) && (__scSet.chkInFrames > 0)) {
+        // this value is highly coupled with I2S DMA buffer
+        // size. DMA buffer has a size of 1 chunk (e.g. 20ms)
+        // so next chunk we get from queue will be -20ms
+        outputBufferDacTime = chkDur_us * CHNK_CTRL_CNT;
+
+        clientDacLatency_us = (int64_t)__scSet.cDacLat_ms * 1000;
+
         if ((scSet.sr != __scSet.sr) || (scSet.bits != __scSet.bits) ||
             (scSet.ch != __scSet.ch)) {
           i2s_custom_stop(I2S_NUM_0);
@@ -1038,17 +1044,18 @@ static void player_task(void *pvParameters) {
 
           ESP_LOGI(TAG, "created new queue with %d", entries);
         }
+
+        ESP_LOGI(TAG,
+                 "snapserver config changed, buffer %dms, chunk %d frames, "
+                 "sample rate %d, ch %d, bits %d mute %d latency %d",
+                 __scSet.buf_ms, __scSet.chkInFrames, __scSet.sr, __scSet.ch,
+                 __scSet.bits, __scSet.muted, __scSet.cDacLat_ms);
+
+        scSet = __scSet;  // store for next round
+
+        gotSnapserverConfig = true;
       }
 
-      ESP_LOGI(TAG,
-               "snapserver config changed, buffer %dms, chunk %d frames, "
-               "sample rate %d, ch %d, bits %d mute %d latency %d",
-               __scSet.buf_ms, __scSet.chkInFrames, __scSet.sr, __scSet.ch,
-               __scSet.bits, __scSet.muted, __scSet.cDacLat_ms);
-
-      scSet = __scSet;  // store for next round
-
-      gotSnapserverConfig = true;
     } else if (gotSnapserverConfig == false) {
       //      ESP_LOGW(TAG, "no snapserver config yet, keep waiting");
 
