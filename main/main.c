@@ -346,9 +346,10 @@ static FLAC__StreamDecoderWriteStatus write_callback(
         }
       }
     }
-  } else {
-    flacData->outData = NULL;
   }
+  //  else {
+  //    flacData->outData = NULL;
+  //  }
 
   xQueueSend(decoderWriteQHdl, &flacData, portMAX_DELAY);
 
@@ -1234,14 +1235,21 @@ static void http_get_task(void *pvParameters) {
                             // afterwards for next round
                             xSemaphoreGive(decoderReadSemaphore);
 
-//                            ESP_LOGI(
-//                                TAG, "8bit %d, block %d, 32 bit %d, block %d",
-//                                heap_caps_get_free_size(MALLOC_CAP_8BIT),
-//                                heap_caps_get_largest_free_block(MALLOC_CAP_8BIT),
-//                                heap_caps_get_free_size(MALLOC_CAP_32BIT |
-//                                MALLOC_CAP_EXEC),
-//                                heap_caps_get_largest_free_block(MALLOC_CAP_32BIT
-//                                | MALLOC_CAP_EXEC));
+#if 0  // enable heap memory analyzing
+                            {
+                              static uint32_t cnt = 0;
+                              if (++cnt % 8 == 0) {
+                                ESP_LOGI(
+                                    TAG, "8bit %d, block %d, 32 bit %d, block %d, waiting %d",
+                                    heap_caps_get_free_size(MALLOC_CAP_8BIT),
+                                    heap_caps_get_largest_free_block(MALLOC_CAP_8BIT),
+                                    heap_caps_get_free_size(MALLOC_CAP_32BIT |
+                                    MALLOC_CAP_EXEC),
+                                    heap_caps_get_largest_free_block(MALLOC_CAP_32BIT
+                                    | MALLOC_CAP_EXEC), pcm_chunk_queue_msg_waiting());
+                              }
+                            }
+#endif
 #endif
 
                             break;

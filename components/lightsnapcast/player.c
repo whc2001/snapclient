@@ -867,17 +867,31 @@ int32_t allocate_pcm_chunk_memory(pcm_chunk_message_t **pcmChunk,
 #elif CONFIG_SPIRAM
   ret = allocate_pcm_chunk_memory_caps(*pcmChunk, bytes, 0);
 #else
-  ret = allocate_pcm_chunk_memory_caps(*pcmChunk, bytes,
-                                       MALLOC_CAP_32BIT | MALLOC_CAP_EXEC);
-  if (ret < 0) {
-    ret = allocate_pcm_chunk_memory_caps(*pcmChunk, bytes, MALLOC_CAP_8BIT);
+  // if allocation fails we try again x times after waiting for chunks to finish
+  // playback
+  // TODO: find a sane value for i, 4 seems to work well to prevent allocation
+  // errors
+  for (int i = 0; i < 4; i++) {
+    ret = allocate_pcm_chunk_memory_caps(*pcmChunk, bytes,
+                                         MALLOC_CAP_32BIT | MALLOC_CAP_EXEC);
     if (ret < 0) {
-      //      ret = allocate_pcm_chunk_memory_caps_fragmented
-      //(*pcmChunk, bytes, MALLOC_CAP_32BIT | MALLOC_CAP_EXEC);
-      if (ret < 0) {
-        // allocate_pcm_chunk_memory_caps_fragmented (*pcmChunk, bytes,
-        // MALLOC_CAP_8BIT);
-      }
+      ret = allocate_pcm_chunk_memory_caps(*pcmChunk, bytes, MALLOC_CAP_8BIT);
+      //      if (ret < 0) {
+      //        //      ret = allocate_pcm_chunk_memory_caps_fragmented
+      //        //(*pcmChunk, bytes, MALLOC_CAP_32BIT | MALLOC_CAP_EXEC);
+      //        if (ret < 0) {
+      //          // allocate_pcm_chunk_memory_caps_fragmented (*pcmChunk,
+      //          bytes,
+      //          // MALLOC_CAP_8BIT);
+      //        }
+      //      }
+    }
+
+    if (ret < 0) {
+      // TODO: insert actual chunk duration here
+      vTaskDelay(pdMS_TO_TICKS(26));
+    } else {
+      break;
     }
   }
 #endif
@@ -944,6 +958,14 @@ int32_t insert_pcm_chunk(pcm_chunk_message_t *pcmChunk) {
   return 0;
 }
 
+int32_t pcm_chunk_queue_msg_waiting(void) {
+  if (pcmChkQHdl) {
+    return uxQueueMessagesWaiting(pcmChkQHdl);
+  } else {
+    return 0;
+  }
+}
+
 /**
  *
  */
@@ -998,8 +1020,6 @@ static void player_task(void *pvParameters) {
           (__scSet.sr > 0)) {
         buf_us = (int64_t)(__scSet.buf_ms) * 1000LL;
 
-        ESP_LOGE(TAG, "%d, SR %d", __scSet.chkInFrames, __scSet.sr);
-
         chkDur_us =
             (int64_t)__scSet.chkInFrames * (int64_t)1E6 / (int64_t)__scSet.sr;
 
@@ -1039,6 +1059,10 @@ static void player_task(void *pvParameters) {
         if (pcmChkQHdl == NULL) {
           int entries = ceil(((float)__scSet.sr / (float)__scSet.chkInFrames) *
                              ((float)__scSet.buf_ms / 1000));
+
+          entries -=
+              CHNK_CTRL_CNT;  // CHNK_CTRL_CNT chunks are placed in DMA buffer
+                              // anyway so we can save this much RAM here
 
           pcmChkQHdl = xQueueCreate(entries, sizeof(pcm_chunk_message_t *));
 
