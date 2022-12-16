@@ -26,7 +26,7 @@ samples and therefore no precise sync could be achieved.
 
 ### Codebase
 
-The codebase is split into components and build on ESP-IDF v4.3. I still
+The codebase is split into components and build on ESP-IDF v4.3.1. I still
 have some refactoring on the todo list as the concept has started to settle and
 allow for new features can be added in a structured manner. In the code you
 will find parts that are only partly related features and still not on the task
@@ -37,7 +37,7 @@ Components
  - audio-hal : taken from ADF, stripped down to strictly necessary parts for usage with Lyrat v4.3
  - audio-sal : taken from ADF, stripped down to strictly necessary parts for usage with Lyrat v4.3
  - custom_board :
- - custom-driver : modified I2S driver from IDF v4.3 which supports preloading DMA buffers with valid data
+ - custom-driver : modified I2S driver from IDF v4.3.1 which supports preloading DMA buffers with valid data
  - dsp_processor : Audio Processor, low pass filters, effects, etc.
  - esp-dsp : Submodule to the ESP-ADF done by David Douard
  - esp-peripherals : taken from ADF, stripped down to strictly necessary parts for usage with Lyrat v4.3
