@@ -92,6 +92,9 @@ xTaskHandle t_http_get_task = NULL;
 xTaskHandle t_flac_decoder_task = NULL;
 xTaskHandle t_flac_task = NULL;
 
+#define FAST_SYNC_LATENCY_BUF 10000      // in µs
+#define NORMAL_SYNC_LATENCY_BUF 1000000  // in µs
+
 struct timeval tdif, tavg;
 static audio_board_handle_t board_handle = NULL;
 
@@ -526,9 +529,6 @@ void flac_task(void *pvParameters) {
     }
   }
 }
-
-#define FAST_SYNC_LATENCY_BUF 10000      // in µs
-#define NORMAL_SYNC_LATENCY_BUF 1000000  // in µs
 
 /**
  *

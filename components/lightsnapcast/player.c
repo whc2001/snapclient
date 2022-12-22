@@ -326,6 +326,9 @@ int8_t player_get_snapcast_settings(snapcastSetting_t *setting) {
   return ret;
 }
 
+/**
+ *
+ */
 int32_t player_latency_insert(int64_t newValue) {
   int64_t medianValue;
 
@@ -339,6 +342,15 @@ int32_t player_latency_insert(int64_t newValue) {
     //    else {
     //      ESP_LOGI(TAG, "(not full) latency median: %lldus", medianValue);
     //    }
+
+#if LATENCY_MEDIAN_AVG_DIVISOR
+    // ESP_LOGI(TAG, "actual latency median: %lldus", medianValue);
+    //    medianValue = MEDIANFILTER_get_median(&latencyMedianFilter,
+    //    ceil((float)LATENCY_MEDIAN_FILTER_LEN /
+    //    (float)LATENCY_MEDIAN_AVG_DIVISOR));
+    medianValue = MEDIANFILTER_get_median(&latencyMedianFilter, 32);
+// ESP_LOGI(TAG, "avg latency median: %lldus", medianValue);
+#endif
 
     latencyToServer = medianValue;
 
@@ -1293,9 +1305,8 @@ static void player_task(void *pvParameters) {
 
       const bool enableControlLoop = true;
 
-      const int64_t shortOffset = 8;  // 20;             //µs, softsync
-      const int64_t miniOffset =
-          1;  // shortOffset / 2;  // 50;    //µs, softsync
+      const int64_t shortOffset = 8;              // 20;  //µs, softsync
+      const int64_t miniOffset = 1;               //µs, softsync
       const int64_t hardResyncThreshold = 10000;  //µs, hard sync
 
       if (initialSync == 1) {
@@ -1375,8 +1386,8 @@ static void player_task(void *pvParameters) {
           usec = usec % 1000;
           // ESP_LOGI (TAG, "%d, %lldus, %lldus %llds, %lld.%lldms", dir, age,
           // avg, sec, msec, usec);
-          // ESP_LOGI (TAG, "%d, %lldus, %lldus, %lldus", dir, avg, shortMedian,
-          // miniMedian);
+          ESP_LOGI(TAG, "%d, %lldus, %lldus, %lldus", dir, avg, shortMedian,
+                   miniMedian);
         }
 
         dir = 0;

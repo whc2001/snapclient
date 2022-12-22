@@ -111,6 +111,41 @@ int64_t MEDIANFILTER_Insert(sMedianFilter_t *medianFilter, int64_t sample) {
 /**
  *
  */
+int64_t MEDIANFILTER_get_median(sMedianFilter_t *medianFilter, uint32_t n) {
+  int64_t avgMedian = 0;
+  sMedianNode_t *it;
+  int32_t i;
+
+  if ((n % 2) == 0) {
+    it = medianFilter->medianHead
+             ->prevValue;  // set iterator as value head previous
+    // first add previous values
+    for (i = 0; i < n / 2; i++) {
+      avgMedian += it->value;
+      it = medianFilter->medianHead->prevValue;
+    }
+
+    it =
+        medianFilter->medianHead->nextValue;  // set iterator as value head next
+    // second add next values
+    for (i = 0; i < n / 2; i++) {
+      avgMedian += it->value;
+      it = medianFilter->medianHead->nextValue;
+    }
+  }
+
+  avgMedian += medianFilter->medianHead->value;
+
+  if (n > 0) {
+    avgMedian /= (n + 1);
+  }
+
+  return avgMedian;
+}
+
+/**
+ *
+ */
 uint32_t MEDIANFILTER_isFull(sMedianFilter_t *medianFilter) {
   if (medianFilter->bufferCnt >= medianFilter->numNodes) {
     return 1;
