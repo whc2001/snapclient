@@ -117,8 +117,7 @@ SemaphoreHandle_t timeSyncSemaphoreHandle = NULL;
 
 #if CONFIG_USE_DSP_PROCESSOR
 #if CONFIG_SNAPCLIENT_DSP_FLOW_STEREO
-// dspFlows_t dspFlow = dspfStereo;  // dspfBiamp; // dspfStereo; //
-// dspfBassBoost;
+dspFlows_t dspFlow = dspfStereo;  // dspfBiamp; // dspfStereo; // dspfBassBoost;
 #endif
 #if CONFIG_SNAPCLIENT_DSP_FLOW_BASSBOOST
 dspFlows_t dspFlow = dspfBassBoost;
