@@ -2349,7 +2349,8 @@ static void http_get_task(void *pvParameters) {
 
                         player_latency_insert(tmpDiffToServer);
 
-                        ESP_LOGI(TAG, "Current latency: %lld", tmpDiffToServer);
+                        // ESP_LOGI(TAG, "Current latency: %lld",
+                        // tmpDiffToServer);
 
                         // store current time
                         lastTimeSync = now;
