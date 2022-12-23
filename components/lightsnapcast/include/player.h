@@ -14,12 +14,13 @@
 #define CHNK_CTRL_CNT 2
 
 #define LATENCY_MEDIAN_FILTER_LEN 199  // 299 //499  // 199  // 29  // 99
-#define LATENCY_MEDIAN_AVG_DIVISOR \
-  0  // set to 0 if you do not wish to be the median an average around actual
-     // median average will be (LATENCY_MEDIAN_FILTER_LEN /
-     // LATENCY_MEDIAN_AVG_DIVISOR) + 1 samples around median. e.g. if n=4 then
-     // 2 samples above and below will be added plus the actual median. So in
-     // reality n+1 samples will be averaged
+
+// set to 0 if you do not wish to be the median an average around actual
+// median average will be (LATENCY_MEDIAN_FILTER_LEN /
+// LATENCY_MEDIAN_AVG_DIVISOR) + 1 samples around median. e.g. if n=4 then
+// 2 samples above and below will be added plus the actual median. So in
+// reality n+1 samples will be averaged
+#define LATENCY_MEDIAN_AVG_DIVISOR 0
 
 #define SHORT_BUFFER_LEN 199  // 99
 #define MINI_BUFFER_LEN 39    // 19

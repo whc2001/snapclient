@@ -1386,8 +1386,9 @@ static void player_task(void *pvParameters) {
           usec = usec % 1000;
           // ESP_LOGI (TAG, "%d, %lldus, %lldus %llds, %lld.%lldms", dir, age,
           // avg, sec, msec, usec);
-          ESP_LOGI(TAG, "%d, %lldus, %lldus, %lldus", dir, avg, shortMedian,
-                   miniMedian);
+          //          ESP_LOGI(TAG, "%d, %lldus, %lldus, %lldus", dir, avg,
+          //          shortMedian,
+          //                   miniMedian);
         }
 
         dir = 0;

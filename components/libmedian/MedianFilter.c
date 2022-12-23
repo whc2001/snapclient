@@ -54,9 +54,9 @@ int64_t MEDIANFILTER_Insert(sMedianFilter_t *medianFilter, int64_t sample) {
   unsigned int i;
   sMedianNode_t *newNode, *it;
 
-  if (medianFilter->ageHead ==
-      medianFilter->valueHead) {  // if oldest node is also the smallest node,
-                                  // increment value head
+  // if oldest node is also the smallest node,
+  // increment value head
+  if (medianFilter->ageHead == medianFilter->valueHead) {
     medianFilter->valueHead = medianFilter->valueHead->nextValue;
   }
 

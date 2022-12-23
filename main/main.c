@@ -75,8 +75,8 @@ SemaphoreHandle_t decoderWriteSemaphore = NULL;
 
 const char *VERSION_STRING = "0.0.2";
 
-#define HTTP_TASK_PRIORITY 9
-#define HTTP_TASK_CORE_ID tskNO_AFFINITY  // 1  // tskNO_AFFINITY
+#define HTTP_TASK_PRIORITY (configMAX_PRIORITIES - 2)  // 9
+#define HTTP_TASK_CORE_ID 1                            // 1  // tskNO_AFFINITY
 
 #define OTA_TASK_PRIORITY 6
 #define OTA_TASK_CORE_ID tskNO_AFFINITY  // 1  // tskNO_AFFINITY
@@ -138,8 +138,10 @@ void time_sync_msg_cb(void *args);
 
 static char base_message_serialized[BASE_MESSAGE_SIZE];
 static char time_message_serialized[TIME_MESSAGE_SIZE];
-static const esp_timer_create_args_t tSyncArgs = {.callback = &time_sync_msg_cb,
-                                                  .name = "tSyncMsg"};
+static const esp_timer_create_args_t tSyncArgs = {
+    .callback = &time_sync_msg_cb,
+    .dispatch_method = ESP_TIMER_TASK,
+    .name = "tSyncMsg"};
 
 struct netconn *lwipNetconn;
 
@@ -198,6 +200,7 @@ void time_sync_msg_cb(void *args) {
     return;
   }
 
+#if 0
   rc1 = netconn_write(lwipNetconn, base_message_serialized, BASE_MESSAGE_SIZE,
                       NETCONN_NOCOPY);
   if (rc1 != ERR_OK) {
@@ -213,6 +216,20 @@ void time_sync_msg_cb(void *args) {
 
     return;
   }
+#else
+  uint8_t *p_pkt = (uint8_t *)malloc(BASE_MESSAGE_SIZE + TIME_MESSAGE_SIZE);
+  memcpy(&p_pkt[0], base_message_serialized, BASE_MESSAGE_SIZE);
+  memcpy(&p_pkt[BASE_MESSAGE_SIZE], time_message_serialized, TIME_MESSAGE_SIZE);
+
+  rc1 = netconn_write(lwipNetconn, p_pkt, BASE_MESSAGE_SIZE + TIME_MESSAGE_SIZE,
+                      NETCONN_NOCOPY);
+  if (rc1 != ERR_OK) {
+    ESP_LOGW(TAG, "error writing timesync msg");
+
+    return;
+  }
+  free(p_pkt);
+#endif
 
   //  ESP_LOGI(TAG, "%s: sent time sync message", __func__);
 
@@ -2332,8 +2349,7 @@ static void http_get_task(void *pvParameters) {
 
                         player_latency_insert(tmpDiffToServer);
 
-                        // ESP_LOGI(TAG, "Current latency: %lld",
-                        // tmpDiffToServer);
+                        ESP_LOGI(TAG, "Current latency: %lld", tmpDiffToServer);
 
                         // store current time
                         lastTimeSync = now;
