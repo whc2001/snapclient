@@ -79,14 +79,16 @@ const char *VERSION_STRING = "0.0.2";
 #define HTTP_TASK_CORE_ID 1                            // 1  // tskNO_AFFINITY
 
 #define OTA_TASK_PRIORITY 6
-#define OTA_TASK_CORE_ID tskNO_AFFINITY  // 1  // tskNO_AFFINITY
+#define OTA_TASK_CORE_ID tskNO_AFFINITY
+// 1  // tskNO_AFFINITY
 
-#define FLAC_DECODER_TASK_PRIORITY 7  // HTTP_TASK_PRIORITY
-#define FLAC_DECODER_TASK_CORE_ID \
-  tskNO_AFFINITY  // HTTP_TASK_CORE_ID  // 1  // tskNO_AFFINITY
+#define FLAC_DECODER_TASK_PRIORITY 7
+#define FLAC_DECODER_TASK_CORE_ID tskNO_AFFINITY
+// HTTP_TASK_CORE_ID  // 1  // tskNO_AFFINITY
 
 #define FLAC_TASK_PRIORITY 8
-#define FLAC_TASK_CORE_ID tskNO_AFFINITY  // 1  // tskNO_AFFINITY
+#define FLAC_TASK_CORE_ID tskNO_AFFINITY
+// 1  // tskNO_AFFINITY
 
 xTaskHandle t_ota_task = NULL;
 xTaskHandle t_http_get_task = NULL;
@@ -515,13 +517,16 @@ void flac_task(void *pvParameters) {
   tv_t currentTimestamp;
   flacData_t *pFlacData = NULL;
   snapcastSetting_t *scSet = (snapcastSetting_t *)pvParameters;
+#if SNAPCAST_USE_SOFT_VOL
+  int flow_drain_counter = 0;
+#endif
 
   if (flacTaskQHdl != NULL) {
     vQueueDelete(flacTaskQHdl);
     flacTaskQHdl = NULL;
   }
 
-  flacTaskQHdl = xQueueCreate(128, sizeof(flacData_t *));
+  flacTaskQHdl = xQueueCreate(8, sizeof(flacData_t *));
   if (flacTaskQHdl == NULL) {
     ESP_LOGE(TAG, "Failed to create flac flacTaskQHdl");
     return;
@@ -589,19 +594,18 @@ void flac_task(void *pvParameters) {
         if (flow_drain_counter > 0) {
           flow_drain_counter--;
           double dynamic_vol =
-              ((double)scSet.volume / 100 / (20 - flow_drain_counter));
+              ((double)scSet->volume / 100 / (20 - flow_drain_counter));
           if (flow_drain_counter == 0) {
 #if SNAPCAST_USE_SOFT_VOL
             dynamic_vol = 0;
 #else
             dynamic_vol = 1;
 #endif
-            audio_hal_set_mute(board_handle->audio_hal,
-                               server_settings_message.muted);
+            audio_hal_set_mute(board_handle->audio_hal, scSet->muted);
           }
           dsp_set_vol(dynamic_vol);
         }
-        dsp_setup_flow(500, scSet.sr, scSet.chkInFrames);
+        dsp_setup_flow(500, scSet->sr, scSet->chkInFrames);
         dsp_processor(pcmData->fragment->payload, pcmData->fragment->size,
                       dspFlow);
 #endif

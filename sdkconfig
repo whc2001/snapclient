@@ -141,10 +141,10 @@ CONFIG_ESP_LYRAT_V4_3_BOARD=y
 # end of Audio HAL
 
 #
-# ESP32 audio buffer and I2S config
+# ESP32 DSP processor config
 #
 # CONFIG_USE_DSP_PROCESSOR is not set
-# end of ESP32 audio buffer and I2S config
+# end of ESP32 DSP processor config
 
 #
 # SNTP Configuration
