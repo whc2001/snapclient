@@ -913,7 +913,7 @@ int32_t allocate_pcm_chunk_memory(pcm_chunk_message_t **pcmChunk,
              "couldn't get memory to insert chunk, inserting an chunk "
              "containing just 0");
 
-    ESP_LOGI(
+    ESP_LOGW(
         TAG, "%d, %d, %d, %d, %d", heap_caps_get_free_size(MALLOC_CAP_8BIT),
         heap_caps_get_largest_free_block(MALLOC_CAP_8BIT),
         uxQueueMessagesWaiting(pcmChkQHdl),
