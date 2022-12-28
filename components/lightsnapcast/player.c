@@ -29,7 +29,7 @@
 
 #include <math.h>
 
-#define SYNC_TASK_PRIORITY (configMAX_PRIORITIES - 1)
+#define SYNC_TASK_PRIORITY (configMAX_PRIORITIES - 2)
 #define SYNC_TASK_CORE_ID 1  // tskNO_AFFINITY
 
 static const char *TAG = "PLAYER";
@@ -1305,8 +1305,8 @@ static void player_task(void *pvParameters) {
 
       const bool enableControlLoop = true;
 
-      const int64_t shortOffset = 8;              // 20;  //µs, softsync
-      const int64_t miniOffset = 1;               //µs, softsync
+      const int64_t shortOffset = 2;  // 8;            // 20;  //µs, softsync
+      const int64_t miniOffset = 1;   //µs, softsync
       const int64_t hardResyncThreshold = 10000;  //µs, hard sync
 
       if (initialSync == 1) {
@@ -1386,9 +1386,18 @@ static void player_task(void *pvParameters) {
           usec = usec % 1000;
           // ESP_LOGI (TAG, "%d, %lldus, %lldus %llds, %lld.%lldms", dir, age,
           // avg, sec, msec, usec);
-          //          ESP_LOGI(TAG, "%d, %lldus, %lldus, %lldus", dir, avg,
-          //          shortMedian,
-          //                   miniMedian);
+          // ESP_LOGI(TAG, "%d, %lldus, %lldus, %lldus, q:%d", dir, avg,
+          // shortMedian, miniMedian, uxQueueMessagesWaiting(pcmChkQHdl));
+          // ESP_LOGI( TAG, "8b f %d b %d",
+          // heap_caps_get_free_size(MALLOC_CAP_8BIT | MALLOC_CAP_INTERNAL),
+          //                               heap_caps_get_largest_free_block
+          //                               (MALLOC_CAP_8BIT |
+          //                               MALLOC_CAP_INTERNAL));
+          // ESP_LOGI( TAG, "32b f %d b %d",
+          // heap_caps_get_free_size(MALLOC_CAP_32BIT | MALLOC_CAP_EXEC),
+          //                                heap_caps_get_largest_free_block
+          //                                (MALLOC_CAP_32BIT |
+          //                                MALLOC_CAP_EXEC));
         }
 
         dir = 0;

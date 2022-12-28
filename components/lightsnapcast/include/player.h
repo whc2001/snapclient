@@ -13,7 +13,7 @@
 // size?!
 #define CHNK_CTRL_CNT 2
 
-#define LATENCY_MEDIAN_FILTER_LEN 199  // 299 //499  // 199  // 29  // 99
+#define LATENCY_MEDIAN_FILTER_LEN 199
 
 // set to 0 if you do not wish to be the median an average around actual
 // median average will be (LATENCY_MEDIAN_FILTER_LEN /
@@ -22,8 +22,8 @@
 // reality n+1 samples will be averaged
 #define LATENCY_MEDIAN_AVG_DIVISOR 0
 
-#define SHORT_BUFFER_LEN 199  // 99
-#define MINI_BUFFER_LEN 39    // 19
+#define SHORT_BUFFER_LEN 99
+#define MINI_BUFFER_LEN 19
 
 typedef struct pcm_chunk_fragment pcm_chunk_fragment_t;
 struct pcm_chunk_fragment {

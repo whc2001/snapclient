@@ -75,14 +75,14 @@ SemaphoreHandle_t decoderWriteSemaphore = NULL;
 
 const char *VERSION_STRING = "0.0.2";
 
-#define HTTP_TASK_PRIORITY (configMAX_PRIORITIES - 2)  // 9
+#define HTTP_TASK_PRIORITY (configMAX_PRIORITIES - 1)  // 9
 #define HTTP_TASK_CORE_ID 1                            // 1  // tskNO_AFFINITY
 
 #define OTA_TASK_PRIORITY 6
 #define OTA_TASK_CORE_ID tskNO_AFFINITY  // 1  // tskNO_AFFINITY
 
-#define FLAC_DECODER_TASK_PRIORITY 7
-#define FLAC_DECODER_TASK_CORE_ID tskNO_AFFINITY  // 1  // tskNO_AFFINITY
+#define FLAC_DECODER_TASK_PRIORITY HTTP_TASK_PRIORITY
+#define FLAC_DECODER_TASK_CORE_ID HTTP_TASK_CORE_ID  // 1  // tskNO_AFFINITY
 
 #define FLAC_TASK_PRIORITY 7
 #define FLAC_TASK_CORE_ID tskNO_AFFINITY  // 1  // tskNO_AFFINITY
@@ -153,9 +153,8 @@ void time_sync_msg_cb(void *args) {
   base_message_t base_message_tx;
   //  struct timeval now;
   int64_t now;
-  int result;
-  time_message_t time_message_tx = {{0, 0}};
-  int rc1 = ERR_OK;
+  // time_message_t time_message_tx = {{0, 0}};
+  int rc1;
 
   // causes kernel panic, which shouldn't happen though?
   // Isn't it called from timer task instead of ISR?
@@ -169,57 +168,45 @@ void time_sync_msg_cb(void *args) {
   //
   //    return;
   //  }
-  now = esp_timer_get_time();
+
+  uint8_t *p_pkt = (uint8_t *)malloc(BASE_MESSAGE_SIZE + TIME_MESSAGE_SIZE);
+  if (p_pkt == NULL) {
+    ESP_LOGW(
+        TAG,
+        "%s: Failed to get memory for time sync message. Skipping this round.",
+        __func__);
+
+    return;
+  }
+
+  memset(p_pkt, 0, BASE_MESSAGE_SIZE + TIME_MESSAGE_SIZE);
 
   base_message_tx.type = SNAPCAST_MESSAGE_TIME;
   base_message_tx.id = id_counter++;
   base_message_tx.refersTo = 0;
   base_message_tx.received.sec = 0;
   base_message_tx.received.usec = 0;
-  //  base_message_tx.sent.sec = now.tv_sec;
-  //  base_message_tx.sent.usec = now.tv_usec;
+  now = esp_timer_get_time();
   base_message_tx.sent.sec = now / 1000000;
   base_message_tx.sent.usec = now - base_message_tx.sent.sec * 1000000;
   base_message_tx.size = TIME_MESSAGE_SIZE;
-
-  result = base_message_serialize(&base_message_tx, base_message_serialized,
-                                  BASE_MESSAGE_SIZE);
-  if (result) {
+  rc1 = base_message_serialize(&base_message_tx, (char *)&p_pkt[0],
+                               BASE_MESSAGE_SIZE);
+  if (rc1) {
     ESP_LOGE(TAG, "Failed to serialize base message for time");
 
     return;
   }
 
-  memset(&time_message_tx, 0, sizeof(time_message_tx));
-
-  result = time_message_serialize(&time_message_tx, time_message_serialized,
-                                  TIME_MESSAGE_SIZE);
-  if (result) {
-    ESP_LOGI(TAG, "Failed to serialize time message");
-
-    return;
-  }
-
-#if 0
-  rc1 = netconn_write(lwipNetconn, base_message_serialized, BASE_MESSAGE_SIZE,
-                      NETCONN_NOCOPY);
-  if (rc1 != ERR_OK) {
-    ESP_LOGW(TAG, "error writing timesync base msg");
-
-    return;
-  }
-
-  rc1 = netconn_write(lwipNetconn, time_message_serialized, TIME_MESSAGE_SIZE,
-                      NETCONN_NOCOPY);
-  if (rc1 != ERR_OK) {
-    ESP_LOGW(TAG, "error writing timesync msg");
-
-    return;
-  }
-#else
-  uint8_t *p_pkt = (uint8_t *)malloc(BASE_MESSAGE_SIZE + TIME_MESSAGE_SIZE);
-  memcpy(&p_pkt[0], base_message_serialized, BASE_MESSAGE_SIZE);
-  memcpy(&p_pkt[BASE_MESSAGE_SIZE], time_message_serialized, TIME_MESSAGE_SIZE);
+  //  memset(&time_message_tx, 0, sizeof(time_message_tx));
+  //  result = time_message_serialize(&time_message_tx,
+  //  &p_pkt[BASE_MESSAGE_SIZE],
+  //                                  TIME_MESSAGE_SIZE);
+  //  if (result) {
+  //    ESP_LOGI(TAG, "Failed to serialize time message");
+  //
+  //    return;
+  //  }
 
   rc1 = netconn_write(lwipNetconn, p_pkt, BASE_MESSAGE_SIZE + TIME_MESSAGE_SIZE,
                       NETCONN_NOCOPY);
@@ -228,8 +215,8 @@ void time_sync_msg_cb(void *args) {
 
     return;
   }
+
   free(p_pkt);
-#endif
 
   //  ESP_LOGI(TAG, "%s: sent time sync message", __func__);
 
@@ -2349,8 +2336,7 @@ static void http_get_task(void *pvParameters) {
 
                         player_latency_insert(tmpDiffToServer);
 
-                        // ESP_LOGI(TAG, "Current latency: %lld",
-                        // tmpDiffToServer);
+                        ESP_LOGI(TAG, "Current latency:%lld:", tmpDiffToServer);
 
                         // store current time
                         lastTimeSync = now;
