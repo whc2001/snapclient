@@ -75,7 +75,7 @@ SemaphoreHandle_t decoderWriteSemaphore = NULL;
 
 const char *VERSION_STRING = "0.0.2";
 
-#define HTTP_TASK_PRIORITY (configMAX_PRIORITIES - 1)  // 9
+#define HTTP_TASK_PRIORITY (configMAX_PRIORITIES - 2)  // 9
 #define HTTP_TASK_CORE_ID 1                            // 1  // tskNO_AFFINITY
 
 #define OTA_TASK_PRIORITY 6
@@ -626,6 +626,13 @@ void flac_task(void *pvParameters) {
       }
     }
   }
+}
+
+/**
+ *
+ */
+esp_err_t audio_set_mute(bool mute) {
+  return audio_hal_set_mute(board_handle->audio_hal, mute);
 }
 
 /**

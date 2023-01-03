@@ -29,7 +29,7 @@
 
 #include <math.h>
 
-#define SYNC_TASK_PRIORITY (configMAX_PRIORITIES - 2)
+#define SYNC_TASK_PRIORITY (configMAX_PRIORITIES - 1)
 #define SYNC_TASK_CORE_ID 1  // tskNO_AFFINITY
 
 static const char *TAG = "PLAYER";
@@ -76,6 +76,8 @@ static snapcastSetting_t currentSnapcastSetting;
 static void tg0_timer_init(void);
 static void tg0_timer_deinit(void);
 static void player_task(void *pvParameters);
+
+extern esp_err_t audio_set_mute(bool mute);
 
 /*
 #define CONFIG_MASTER_I2S_BCK_PIN 5
@@ -879,11 +881,11 @@ int32_t allocate_pcm_chunk_memory(pcm_chunk_message_t **pcmChunk,
 #elif CONFIG_SPIRAM
   ret = allocate_pcm_chunk_memory_caps(*pcmChunk, bytes, 0);
 #else
-  // if allocation fails we try again x times after waiting for chunks to finish
-  // playback
-  // TODO: find a sane value for i, 4 seems to work well to prevent allocation
-  // errors
-  for (int i = 0; i < 4; i++) {
+  // TODO: x should probably be dynamically calculated as a fraction of buffer
+  // size if allocation fails we try again every 1ms for max. x ms waiting for
+  // chunks to finish playback
+  uint32_t x = 200;
+  for (int i = 0; i < x; i++) {
     ret = allocate_pcm_chunk_memory_caps(*pcmChunk, bytes,
                                          MALLOC_CAP_32BIT | MALLOC_CAP_EXEC);
     if (ret < 0) {
@@ -900,8 +902,7 @@ int32_t allocate_pcm_chunk_memory(pcm_chunk_message_t **pcmChunk,
     }
 
     if (ret < 0) {
-      // TODO: insert actual chunk duration here
-      vTaskDelay(pdMS_TO_TICKS(26));
+      vTaskDelay(pdMS_TO_TICKS(1));
     } else {
       break;
     }
@@ -1015,6 +1016,8 @@ static void player_task(void *pvParameters) {
 
   initialSync = 0;
 
+  audio_set_mute(true);
+
   while (1) {
     // ESP_LOGW( TAG, "32b f %d b %d", heap_caps_get_free_size
     //(MALLOC_CAP_8BIT), heap_caps_get_largest_free_block (MALLOC_CAP_8BIT));
@@ -1058,7 +1061,10 @@ static void player_task(void *pvParameters) {
           adjust_apll(0);
 
           i2s_custom_set_clk(I2S_NUM_0, __scSet.sr, __scSet.bits, __scSet.ch);
+
           initialSync = 0;
+
+          audio_set_mute(true);
         }
 
         if ((__scSet.buf_ms != scSet.buf_ms) ||
@@ -1257,6 +1263,10 @@ static void player_task(void *pvParameters) {
 
           initialSync = 1;
 
+          // TODO: use a timer to un-mute non blocking
+          vTaskDelay(pdMS_TO_TICKS(2));
+          audio_set_mute(scSet.muted);
+
           ESP_LOGI(TAG, "initial sync age: %lldus, chunk duration: %lldus", age,
                    chkDur_us);
 
@@ -1297,6 +1307,8 @@ static void player_task(void *pvParameters) {
         dir = 0;
 
         initialSync = 0;
+
+        audio_set_mute(true);
 
         i2s_custom_stop(I2S_NUM_0);
 
@@ -1357,6 +1369,8 @@ static void player_task(void *pvParameters) {
 
           initialSync = 0;
 
+          audio_set_mute(true);
+
           continue;
         }
 
@@ -1384,20 +1398,22 @@ static void player_task(void *pvParameters) {
           usec = diff2Server - sec * 1000000;
           msec = usec / 1000;
           usec = usec % 1000;
-          // ESP_LOGI (TAG, "%d, %lldus, %lldus %llds, %lld.%lldms", dir, age,
-          // avg, sec, msec, usec);
-          // ESP_LOGI(TAG, "%d, %lldus, %lldus, %lldus, q:%d", dir, avg,
-          // shortMedian, miniMedian, uxQueueMessagesWaiting(pcmChkQHdl));
-          // ESP_LOGI( TAG, "8b f %d b %d",
-          // heap_caps_get_free_size(MALLOC_CAP_8BIT | MALLOC_CAP_INTERNAL),
-          //                               heap_caps_get_largest_free_block
-          //                               (MALLOC_CAP_8BIT |
-          //                               MALLOC_CAP_INTERNAL));
-          // ESP_LOGI( TAG, "32b f %d b %d",
-          // heap_caps_get_free_size(MALLOC_CAP_32BIT | MALLOC_CAP_EXEC),
-          //                                heap_caps_get_largest_free_block
-          //                                (MALLOC_CAP_32BIT |
-          //                                MALLOC_CAP_EXEC));
+          //           ESP_LOGI (TAG, "%d, %lldus, %lldus %llds, %lld.%lldms",
+          //           dir, age, avg, sec, msec, usec); ESP_LOGI(TAG, "%d,
+          //           %lldus, %lldus, %lldus, q:%d", dir, avg, shortMedian,
+          //           miniMedian, uxQueueMessagesWaiting(pcmChkQHdl));
+          //           ESP_LOGI( TAG, "8b f %d b %d",
+          //           heap_caps_get_free_size(MALLOC_CAP_8BIT |
+          //           MALLOC_CAP_INTERNAL),
+          //                                         heap_caps_get_largest_free_block
+          //                                         (MALLOC_CAP_8BIT |
+          //                                         MALLOC_CAP_INTERNAL));
+          //           ESP_LOGI( TAG, "32b f %d b %d",
+          //           heap_caps_get_free_size(MALLOC_CAP_32BIT |
+          //           MALLOC_CAP_EXEC),
+          //                                          heap_caps_get_largest_free_block
+          //                                          (MALLOC_CAP_32BIT |
+          //                                          MALLOC_CAP_EXEC));
         }
 
         dir = 0;
@@ -1474,6 +1490,8 @@ static void player_task(void *pvParameters) {
       dir = 0;
 
       initialSync = 0;
+
+      audio_set_mute(true);
 
       i2s_custom_stop(I2S_NUM_0);
     }
