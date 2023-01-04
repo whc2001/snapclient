@@ -177,7 +177,7 @@ Then on every `git commit`, a few sanity/formatting checks will be performed.
 - [ ] reduce dsp_processor memory footprint
 - [ ] dsp_processor: add equalizer
       * Control interface for equalizer
--[ ] clean and polish code (remove all unused variables etc.)
+- [ ] clean and polish code (remove all unused variables etc.)
 
 ## Minor task
   - [ok] soft mute - play sample in buffer with decreasing volume
