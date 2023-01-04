@@ -3,17 +3,17 @@
 ### Synchronous Multiroom audio streaming client for [Snapcast](https://github.com/badaix/snapcast) ported to ESP32
 
 ## Feature list
-- Opus, FLAC and PCM decoding currently supported
+- FLAC decoding currently supported
 - Wifi setup from menuconfig or through espressif Android App "SoftAP Prov"
 - Auto connect to snapcast server on network
-- Buffers up to 800ms on Wroom modules
+- Buffers up to 1000ms on Wroom modules (tested with 44100:16:2)
 - Buffers more then enough on Wrover modules
 - Multiroom sync delay controlled from Snapcast server (user has to ensure not to set this too high on the server)
 
 ## Description
 I have continued the work from @badaix, @bridadan and @jorgenkraghjakobsen towards a ESP32 Snapcast
 client. Currently it support basic features like multiroom sync, network
-controlled volume and mute. For now it only support Opus, FLAC and PCM 16bit
+controlled volume and mute. For now it only support FLAC 16bit
 audio streams with sample rates up to 48Khz maybe more, I didn't test.
 
 Please check out the task list and feel free to fill in.
@@ -30,7 +30,7 @@ The codebase is split into components and build on ESP-IDF v4.3.1. I still
 have some refactoring on the todo list as the concept has started to settle and
 allow for new features can be added in a structured manner. In the code you
 will find parts that are only partly related features and still not on the task
-list.
+list. Also there is a lot of code clean up needed.
 
 Components
  - audio-board : taken from ADF, stripped down to strictly necessary parts for usage with Lyrat v4.3
@@ -41,7 +41,7 @@ Components
  - dsp_processor : Audio Processor, low pass filters, effects, etc.
  - esp-dsp : Submodule to the ESP-ADF done by David Douard
  - esp-peripherals : taken from ADF, stripped down to strictly necessary parts for usage with Lyrat v4.3
- - flac : flac audio cider/decoder full submodule
+ - flac : flac audio encoder/decoder full submodule
  - libmedian: Median Filter implementation. Many thanks to @accabog https://github.com/accabog/MedianFilter
  - libbuffer : Generic buffer abstraction
  - lightsnapcast :
@@ -57,7 +57,7 @@ Components
  - wifi_interface : wifi provisoning and init code for wifi module and AP connection
 
 The snapclient functionanlity are implemented in a task included in main - but
-will be refactored to a component in near future.
+should be refactored to a component at some point.
 
 I did my own syncing implementation which is different than @jorgenkraghjakobsen's
 approach in the original repository, at least regarding syncing itself. I tried to
@@ -84,7 +84,7 @@ In this implementation I have separated the sync task to a backend on the other
 end of a freeRTOS queue. Now the front end just needs to pass on the decoded audio
 data to the queue with the server timestamp and chunk size. The backend reads
 timestamps and waits until the audio chunk has the correct playback-delay
-to be written to the DAC amplifer speaker pipeline. When the backend pipeline
+to be written to the DAC amplifer speaker through i2s DMA. When the backend pipeline
 is in sync, any offset get rolled in by micro tuning the APLL on the ESP. No
 sample manipulation needed.
 
@@ -165,18 +165,22 @@ Then on every `git commit`, a few sanity/formatting checks will be performed.
 
 ## Task list
 - [ok] Fix to alinge with above
-- [ ] put kconfig to better locations in tree
+- [ok] put kconfig to better locations in tree
  * add codec description
 - [ok] Integrate ESP wifi provision
 - [ok] Find and connect to Avahi broadcasted Snapcast server name
 - [ ] Add a client command interface layer like volume/mute control
-- [ ] add missing codec's (ogg, etc.)
-- [ ] test esp-dsp functionality after ADF drop
-- [ ] Check compatibility with different HW than Lyrat v4.3
-- [ ] rework dsp_processor and test. At the moment only dspfStereo and dspfBassBoost will work. Also ensure/test we got enough RAM on WROVER modules
+- [ ] add missing codec's (ogg, pcm, opus)
+- [ok] test esp-dsp functionality after ADF drop
+- [ok] Check compatibility with different HW than Lyrat v4.3
+- [ok] rework dsp_processor and test. At the moment only dspfStereo and dspfBassBoost will work. Also ensure/test we got enough RAM on WROVER modules
+- [ ] reduce dsp_processor memory footprint
+- [ ] dsp_processor: add equalizer
+      * Control interface for equalizer
+-[ ] clean and polish code (remove all unused variables etc.)
 
 ## Minor task
-  - [ ] soft mute - play sample in buffer with decreasing volume
+  - [ok] soft mute - play sample in buffer with decreasing volume
   - [ok] hard mute - using ADF's HAL
   - [ok] Startup: do not start parsing on samples to codec before sample ring buffer hits requested buffer size.
   - [ok] Start from empty buffer
