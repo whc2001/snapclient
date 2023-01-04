@@ -176,7 +176,7 @@ Then on every `git commit`, a few sanity/formatting checks will be performed.
 - [ok] rework dsp_processor and test. At the moment only dspfStereo and dspfBassBoost will work. Also ensure/test we got enough RAM on WROVER modules
 - [ ] reduce dsp_processor memory footprint
 - [ ] dsp_processor: add equalizer
-      * Control interface for equalizer
+ * Control interface for equalizer
 - [ ] clean and polish code (remove all unused variables etc.)
 
 ## Minor task
