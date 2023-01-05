@@ -517,7 +517,7 @@ void flac_task(void *pvParameters) {
   tv_t currentTimestamp;
   flacData_t *pFlacData = NULL;
   snapcastSetting_t *scSet = (snapcastSetting_t *)pvParameters;
-#if SNAPCAST_USE_SOFT_VOL
+#if CONFIG_USE_DSP_PROCESSOR
   int flow_drain_counter = 0;
 #endif
 
