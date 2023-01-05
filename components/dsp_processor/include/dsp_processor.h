@@ -6,7 +6,8 @@ typedef enum dspFlows {
   dspfBiamp,
   dspf2DOT1,
   dspfFunkyHonda,
-  dspfBassBoost
+  dspfBassBoost,
+  dspfEQBassTreble,
 } dspFlows_t;
 
 enum filtertypes {

@@ -22,6 +22,9 @@ menu "ESP32 DSP processor config"
 
         config SNAPCLIENT_DSP_FLOW_BIAMP
             bool "Bi-Amp flow"
+
+        config SNAPCLIENT_DSP_FLOW_BASS_TREBLE_EQ
+            bool "Bass Treble EQ"
     endchoice
 
     config USE_BIQUAD_ASM
