@@ -51,6 +51,8 @@
 #include "player.h"
 #include "snapcast.h"
 
+#include "ui_http_server.h"
+
 static FLAC__StreamDecoderReadStatus read_callback(
     const FLAC__StreamDecoder *decoder, FLAC__byte buffer[], size_t *bytes,
     void *client_data);
@@ -303,8 +305,9 @@ static FLAC__StreamDecoderReadStatus read_callback(
   return FLAC__STREAM_DECODER_READ_STATUS_CONTINUE;
 }
 
-static flacData_t flacOutData;
-
+/**
+ *
+ */
 static FLAC__StreamDecoderWriteStatus write_callback(
     const FLAC__StreamDecoder *decoder, const FLAC__Frame *frame,
     const FLAC__int32 *const buffer[], void *client_data) {
@@ -312,7 +315,6 @@ static FLAC__StreamDecoderWriteStatus write_callback(
   flacData_t *flacData = NULL;  // = &flacOutData;
   snapcastSetting_t *scSet = (snapcastSetting_t *)client_data;
   int ret = 0;
-  uint32_t tmpData;
   uint32_t fragmentCnt = 0;
 
   (void)decoder;
@@ -321,8 +323,8 @@ static FLAC__StreamDecoderWriteStatus write_callback(
 
   // xQueueReceive (flacReadQHdl, &flacData, portMAX_DELAY);
 
-  //  ESP_LOGI(TAG, "in flac write cb %d %p", frame->header.blocksize,
-  //  flacData);
+  //    ESP_LOGI(TAG, "in flac write cb %d %p", frame->header.blocksize,
+  //    flacData);
 
   if (frame->header.channels != scSet->ch) {
     ESP_LOGE(TAG,
@@ -357,8 +359,6 @@ static FLAC__StreamDecoderWriteStatus write_callback(
   flacData->bytes = frame->header.blocksize * frame->header.channels *
                     (frame->header.bits_per_sample / 8);
 
-  // flacData->outData = (char *)realloc (flacData->outData, flacData->bytes);
-  // flacData->outData = (char *)malloc (flacData->bytes);
   ret = allocate_pcm_chunk_memory(&(flacData->outData), flacData->bytes);
 
   //   ESP_LOGI (TAG, "mem %p %p %d", flacData->outData,
@@ -379,14 +379,16 @@ static FLAC__StreamDecoderWriteStatus write_callback(
 
         // TODO: for now fragmented payload is not supported and the whole
         // chunk is expected to be in the first fragment
+        uint32_t tmpData;
         tmpData = ((uint32_t)((buffer[0][i] >> 8) & 0xFF) << 24) |
                   ((uint32_t)((buffer[0][i] >> 0) & 0xFF) << 16) |
                   ((uint32_t)((buffer[1][i] >> 8) & 0xFF) << 8) |
                   ((uint32_t)((buffer[1][i] >> 0) & 0xFF) << 0);
 
         if (fragment != NULL) {
-          uint32_t *test = (uint32_t *)(&(fragment->payload[fragmentCnt]));
-          *test = tmpData;
+          volatile uint32_t *test =
+              (volatile uint32_t *)(&(fragment->payload[fragmentCnt]));
+          *test = (volatile uint32_t *)tmpData;
         }
 
         fragmentCnt += 4;
@@ -411,6 +413,9 @@ static FLAC__StreamDecoderWriteStatus write_callback(
   return FLAC__STREAM_DECODER_WRITE_STATUS_CONTINUE;
 }
 
+/**
+ *
+ */
 void metadata_callback(const FLAC__StreamDecoder *decoder,
                        const FLAC__StreamMetadata *metadata,
                        void *client_data) {
@@ -449,6 +454,9 @@ void metadata_callback(const FLAC__StreamDecoder *decoder,
   //  xSemaphoreGive(flacReadSemaphore);
 }
 
+/**
+ *
+ */
 void error_callback(const FLAC__StreamDecoder *decoder,
                     FLAC__StreamDecoderErrorStatus status, void *client_data) {
   (void)decoder, (void)client_data;
@@ -600,17 +608,17 @@ void flac_task(void *pvParameters) {
               ((double)scSet->volume / 100 / (20 - flow_drain_counter));
           if (flow_drain_counter == 0) {
 #if SNAPCAST_USE_SOFT_VOL
-            dynamic_vol = 0;
+            dynamic_vol = 0.0;
 #else
-            dynamic_vol = 1;
+            dynamic_vol = 1.0;
 #endif
             audio_hal_set_mute(board_handle->audio_hal, scSet->muted);
           }
-          dsp_set_vol(dynamic_vol);
+          dsp_processor_set_volome(dynamic_vol);
         }
-        dsp_setup_flow(500, scSet->sr, scSet->chkInFrames);
-        dsp_processor(pcmData->fragment->payload, pcmData->fragment->size,
-                      dspFlow);
+
+        dsp_processor_worker(pcmData->fragment->payload,
+                             pcmData->fragment->size, scSet->sr);
 #endif
 
         insert_pcm_chunk(pcmData);
@@ -663,7 +671,7 @@ static void http_get_task(void *pvParameters) {
   snapcastSetting_t scSet;
   // flacData_t flacData = {SNAPCAST_MESSAGE_CODEC_HEADER, NULL, {0, 0}, NULL,
   // 0};
-  flacData_t *pFlacData;
+  flacData_t *pFlacData = NULL;
   pcm_chunk_message_t *pcmData = NULL;
   ip_addr_t remote_ip;
   uint16_t remotePort = 0;
@@ -1287,11 +1295,11 @@ static void http_get_task(void *pvParameters) {
 
                       internalState++;
 
-                      // ESP_LOGI(TAG,
-                      // "got wire chunk with size: %d, at time"
-                      // " %d.%d", wire_chnk.size,
-                      // wire_chnk.timestamp.sec,
-                      // wire_chnk.timestamp.usec);
+                      //                      ESP_LOGI(TAG,
+                      //                      "chunk with size: %d, at time"
+                      //                      " %d.%d", wire_chnk.size,
+                      //                      wire_chnk.timestamp.sec,
+                      //                      wire_chnk.timestamp.usec);
 
                       break;
                     }
@@ -1305,23 +1313,59 @@ static void http_get_task(void *pvParameters) {
                         tmp = len;
                       }
 
+                      //                      static double lastChunkTimestamp =
+                      //                      0; double timestamp =
+                      //                      ((double)wire_chnk.timestamp.sec *
+                      //                      1000000.0 +
+                      //                      (double)wire_chnk.timestamp.usec)
+                      //                      / 1000.0;
+                      //
+                      //                      ESP_LOGI(TAG, "duration %lfms,
+                      //                      length %d", timestamp -
+                      //                      lastChunkTimestamp, tmp);
+                      //
+                      //                      lastChunkTimestamp = timestamp;
+
                       if (received_header == true) {
                         switch (codec) {
                           case FLAC: {
 #if TEST_DECODER_TASK
-                            pFlacData =
-                                (flacData_t *)malloc(sizeof(flacData_t));
+                            pFlacData = NULL;
+                            while (!pFlacData) {
+                              pFlacData =
+                                  (flacData_t *)malloc(sizeof(flacData_t));
+                              if (!pFlacData) {
+                                vTaskDelay(pdMS_TO_TICKS(1));
+                              }
+                            }
+
                             pFlacData->bytes = tmp;
+
                             // store timestamp for
                             // later use
                             pFlacData->timestamp = wire_chnk.timestamp;
-                            pFlacData->inData = (char *)malloc(tmp);
-                            memcpy(pFlacData->inData, start, tmp);
-                            pFlacData->outData = NULL;
-                            pFlacData->type = SNAPCAST_MESSAGE_WIRE_CHUNK;
+                            pFlacData->inData = NULL;
 
-                            // send data to seperate task which will handle this
-                            xQueueSend(flacTaskQHdl, &pFlacData, portMAX_DELAY);
+                            // while ((!pFlacData->inData) && (mallocCnt < 100))
+                            // {
+                            while (!pFlacData->inData) {
+                              pFlacData->inData =
+                                  (char *)malloc(pFlacData->bytes);
+                              if (!pFlacData->inData) {
+                                vTaskDelay(pdMS_TO_TICKS(1));
+                              }
+                            }
+
+                            if (pFlacData->inData) {
+                              memcpy(pFlacData->inData, start, tmp);
+                              pFlacData->outData = NULL;
+                              pFlacData->type = SNAPCAST_MESSAGE_WIRE_CHUNK;
+
+                              // send data to seperate task which will handle
+                              // this
+                              xQueueSend(flacTaskQHdl, &pFlacData,
+                                         portMAX_DELAY);
+                            }
 #else
                             flacData.bytes = tmp;
                             flacData.timestamp =
@@ -1375,8 +1419,9 @@ static void http_get_task(void *pvParameters) {
                               remainderSize = 0;
                             }
 
-                            if (pcmData != NULL) {
-                              uint32_t *sample;
+                            //                            if (pcmData != NULL)
+                            {
+                              volatile uint32_t *sample;
 
                               int max = 0, begin = 0;
 
@@ -1420,9 +1465,11 @@ static void http_get_task(void *pvParameters) {
                                 dummy2 |= (uint32_t)dummy1 << 8;
                                 tmpData = dummy2;
 
-                                sample = (uint32_t *)(&(
-                                    pcmData->fragment->payload[offset]));
-                                *sample = tmpData;
+                                if ((pcmData) && (pcmData->fragment->payload)) {
+                                  sample = (volatile uint32_t *)(&(
+                                      pcmData->fragment->payload[offset]));
+                                  *sample = (volatile uint32_t)tmpData;
+                                }
 
                                 offset += 4;
                               }
@@ -1442,11 +1489,12 @@ static void http_get_task(void *pvParameters) {
                                           ((uint32_t)start[i + 2] << 0) |
                                           ((uint32_t)start[i + 3] << 8);
 
-                                // ensure 32bit alligned
-                                // write
-                                sample = (uint32_t *)(&(
-                                    pcmData->fragment->payload[offset]));
-                                *sample = tmpData;
+                                // ensure 32bit aligned write
+                                if ((pcmData) && (pcmData->fragment->payload)) {
+                                  sample = (volatile uint32_t *)(&(
+                                      pcmData->fragment->payload[offset]));
+                                  *sample = (volatile uint32_t)tmpData;
+                                }
 
                                 offset += 4;
                               }
@@ -1556,20 +1604,24 @@ static void http_get_task(void *pvParameters) {
                                        (20 - flow_drain_counter));
                                   if (flow_drain_counter == 0) {
 #if SNAPCAST_USE_SOFT_VOL
-                                    dynamic_vol = 0;
+                                    dynamic_vol = 0.0;
 #else
-                                    dynamic_vol = 1;
+                                    dynamic_vol = 1.0;
 #endif
                                     audio_hal_set_mute(
                                         board_handle->audio_hal,
                                         server_settings_message.muted);
                                   }
-                                  dsp_set_vol(dynamic_vol);
+
+                                  dsp_processor_set_volome(dynamic_vol);
                                 }
-                                dsp_setup_flow(500, scSet.sr,
-                                               scSet.chkInFrames);
-                                dsp_processor(pcmData->fragment->payload,
-                                              pcmData->fragment->size, dspFlow);
+
+                                if ((pcmData) && (pcmData->fragment->payload)) {
+                                  dsp_processor_worker(
+                                      pcmData->fragment->payload,
+                                      pcmData->fragment->size, scSet.sr);
+                                }
+
 #endif
 
                                 insert_pcm_chunk(pcmData);
@@ -1585,9 +1637,11 @@ static void http_get_task(void *pvParameters) {
                             }
 
                             case PCM: {
-                              size_t decodedSize = pcmData->fragment->size;
+                              size_t decodedSize = wire_chnk.size;
 
-                              pcmData->timestamp = wire_chnk.timestamp;
+                              if (pcmData) {
+                                pcmData->timestamp = wire_chnk.timestamp;
+                              }
 
                               scSet.chkInFrames =
                                   decodedSize /
@@ -1612,23 +1666,31 @@ static void http_get_task(void *pvParameters) {
                                      (20 - flow_drain_counter));
                                 if (flow_drain_counter == 0) {
 #if SNAPCAST_USE_SOFT_VOL
-                                  dynamic_vol = 0;
+                                  dynamic_vol = 0.0;
 #else
-                                  dynamic_vol = 1;
+                                  dynamic_vol = 1.0;
 #endif
                                   audio_hal_set_mute(
                                       board_handle->audio_hal,
                                       server_settings_message.muted);
                                 }
-                                dsp_set_vol(dynamic_vol);
+
+                                dsp_processor_set_volome(dynamic_vol);
                               }
-                              dsp_setup_flow(500, scSet.sr, scSet.chkInFrames);
-                              dsp_processor(pcmData->fragment->payload,
-                                            pcmData->fragment->size, dspFlow);
+
+                              if ((pcmData) && (pcmData->fragment->payload)) {
+                                dsp_processor_worker(pcmData->fragment->payload,
+                                                     pcmData->fragment->size,
+                                                     scSet.sr);
+                              }
 #endif
 
-                              insert_pcm_chunk(pcmData);
+                              if (pcmData) {
+                                insert_pcm_chunk(pcmData);
+                              }
+
                               pcmData = NULL;
+
                               break;
                             }
 
@@ -2204,10 +2266,10 @@ static void http_get_task(void *pvParameters) {
                             audio_hal_set_mute(board_handle->audio_hal,
                                                server_settings_message.muted);
 #if SNAPCAST_USE_SOFT_VOL
-                            dsp_set_vol((double)server_settings_message.volume /
-                                        100);
+                            dsp_processor_set_volome(
+                                (double)server_settings_message.volume / 100);
 #else
-                            dsp_set_vol(1.0);
+                            dsp_processor_set_volome(1.0);
 #endif
                           }
 #else
@@ -2217,8 +2279,8 @@ static void http_get_task(void *pvParameters) {
                         }
                         if (scSet.volume != server_settings_message.volume) {
 #if SNAPCAST_USE_SOFT_VOL
-                          dsp_set_vol((double)server_settings_message.volume /
-                                      100);
+                          dsp_processor_set_volome(
+                              (double)server_settings_message.volume / 100);
 #else
                           audio_hal_set_volume(board_handle->audio_hal,
                                                server_settings_message.volume);
@@ -2615,19 +2677,18 @@ void app_main(void) {
   i2s_mclk_gpio_select(0, 0);
   // setup_ma120();
 
-#if CONFIG_USE_DSP_PROCESSOR
-  dsp_setup_flow(500, 44100, 20);  // init with default value
-#endif
-
   ESP_LOGI(TAG, "init player");
   init_player();
 
   // Enable and setup WIFI in station mode and connect to Access point setup in
   // menu config or set up provisioning mode settable in menuconfig
   wifi_init();
+  ESP_LOGI(TAG, "Connected to AP");
+
+  // http server for control operations and user interface
+  init_http_server_task();
 
   // Enable websocket server
-  ESP_LOGI(TAG, "Connected to AP");
   //  ESP_LOGI(TAG, "Setup ws server");
   //  websocket_if_start();
 
@@ -2636,27 +2697,27 @@ void app_main(void) {
   set_time_from_sntp();
 #endif
 
+#if CONFIG_USE_DSP_PROCESSOR
+  dsp_processor_init();
+#endif
+
   xTaskCreatePinnedToCore(&ota_server_task, "ota", 14 * 256, NULL,
                           OTA_TASK_PRIORITY, t_ota_task, OTA_TASK_CORE_ID);
-
-  //  xTaskCreatePinnedToCore (&http_get_task, "http", 10 * 256, NULL,
-  //                           HTTP_TASK_PRIORITY, &t_http_get_task,
-  //                           HTTP_TASK_CORE_ID);
 
   xTaskCreatePinnedToCore(&http_get_task, "http", 3 * 1024, NULL,
                           HTTP_TASK_PRIORITY, &t_http_get_task,
                           HTTP_TASK_CORE_ID);
 
-  while (1) {
-    // audio_event_iface_msg_t msg;
-    vTaskDelay(portMAX_DELAY);  //(pdMS_TO_TICKS(5000));
-
-    // ma120_read_error(0x20);
-
-    esp_err_t ret = 0;  // audio_event_iface_listen(evt, &msg, portMAX_DELAY);
-    if (ret != ESP_OK) {
-      ESP_LOGE(TAG, "[ * ] Event interface error : %d", ret);
-      continue;
-    }
-  }
+  //  while (1) {
+  //    // audio_event_iface_msg_t msg;
+  //    vTaskDelay(portMAX_DELAY);  //(pdMS_TO_TICKS(5000));
+  //
+  //    // ma120_read_error(0x20);
+  //
+  //    esp_err_t ret = 0;  // audio_event_iface_listen(evt, &msg,
+  //    portMAX_DELAY); if (ret != ESP_OK) {
+  //      ESP_LOGE(TAG, "[ * ] Event interface error : %d", ret);
+  //      continue;
+  //    }
+  //  }
 }

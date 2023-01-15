@@ -23,6 +23,10 @@ enum filtertypes {
   HIGHSHELF
 };
 
+// Each audio processor node consist of a data struct holding the
+// required weights and states for processing an automomous processing
+// function. The high level parameters is maintained in the structure
+// as well
 // Process node
 typedef struct ptype {
   int filtertype;
@@ -34,15 +38,28 @@ typedef struct ptype {
   float w[2];
 } ptype_t;
 
+// used to dynamically change used filters and their parameters
+typedef struct filterParams_s {
+  dspFlows_t dspFlow;
+  float fc_1;
+  float gain_1;
+  float fc_2;
+  float gain_2;
+  float fc_3;
+  float gain_3;
+} filterParams_t;
+
+// TODO: this is unused, remove???
 // Process flow
 typedef struct pnode {
   ptype_t process;
   struct pnode *next;
 } pnode_t;
 
-void dsp_setup_flow(double freq, uint32_t samplerate, uint32_t chunkInFrames);
-int dsp_processor(char *audio, size_t chunk_size, dspFlows_t dspFlow);
-void dsp_set_xoverfreq(uint8_t, uint8_t, uint32_t);
-void dsp_set_vol(double volume);
+void dsp_processor_init(void);
+void dsp_processor_uninit(void);
+int dsp_processor_worker(char *audio, size_t chunk_size, uint32_t samplerate);
+esp_err_t dsp_processor_update_filter_params(filterParams_t *params);
+void dsp_processor_set_volome(double volume);
 
 #endif /* _DSP_PROCESSOR_H_  */

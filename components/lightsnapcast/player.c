@@ -950,6 +950,8 @@ int32_t insert_pcm_chunk(pcm_chunk_message_t *pcmChunk) {
   if (pcmChkQHdl == NULL) {
     ESP_LOGW(TAG, "pcm chunk queue not created");
 
+    free_pcm_chunk(pcmChunk);
+
     return -2;
   }
 
@@ -1398,22 +1400,19 @@ static void player_task(void *pvParameters) {
           usec = diff2Server - sec * 1000000;
           msec = usec / 1000;
           usec = usec % 1000;
+
           //           ESP_LOGI (TAG, "%d, %lldus, %lldus %llds, %lld.%lldms",
-          //           dir, age, avg, sec, msec, usec); ESP_LOGI(TAG, "%d,
-          //           %lldus, %lldus, %lldus, q:%d", dir, avg, shortMedian,
-          //           miniMedian, uxQueueMessagesWaiting(pcmChkQHdl));
-          //           ESP_LOGI( TAG, "8b f %d b %d",
-          //           heap_caps_get_free_size(MALLOC_CAP_8BIT |
-          //           MALLOC_CAP_INTERNAL),
-          //                                         heap_caps_get_largest_free_block
-          //                                         (MALLOC_CAP_8BIT |
-          //                                         MALLOC_CAP_INTERNAL));
-          //           ESP_LOGI( TAG, "32b f %d b %d",
-          //           heap_caps_get_free_size(MALLOC_CAP_32BIT |
-          //           MALLOC_CAP_EXEC),
-          //                                          heap_caps_get_largest_free_block
-          //                                          (MALLOC_CAP_32BIT |
-          //                                          MALLOC_CAP_EXEC));
+          //           dir, age, avg, sec, msec, usec);
+          // ESP_LOGI(TAG, "%d, %lldus, %lldus, %lldus, q:%d", dir, avg,
+          // shortMedian, miniMedian, uxQueueMessagesWaiting(pcmChkQHdl));
+          // ESP_LOGI( TAG, "8b f %d b %d",
+          // heap_caps_get_free_size(MALLOC_CAP_8BIT | MALLOC_CAP_INTERNAL),
+          // heap_caps_get_largest_free_block(MALLOC_CAP_8BIT |
+          // MALLOC_CAP_INTERNAL));
+          // ESP_LOGI( TAG, "32b f %d b %d",
+          // heap_caps_get_free_size(MALLOC_CAP_32BIT |
+          // MALLOC_CAP_EXEC), heap_caps_get_largest_free_block
+          // (MALLOC_CAP_32BIT | MALLOC_CAP_EXEC));
         }
 
         dir = 0;
