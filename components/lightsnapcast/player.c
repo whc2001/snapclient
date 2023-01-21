@@ -886,7 +886,7 @@ int32_t allocate_pcm_chunk_memory(pcm_chunk_message_t **pcmChunk,
   // TODO: x should probably be dynamically calculated as a fraction of buffer
   // size if allocation fails we try again every 1ms for max. x ms waiting for
   // chunks to finish playback
-  uint32_t x = 200;
+  uint32_t x = 50;
   for (int i = 0; i < x; i++) {
     ret = allocate_pcm_chunk_memory_caps(*pcmChunk, bytes,
                                          MALLOC_CAP_32BIT | MALLOC_CAP_EXEC);
@@ -1333,9 +1333,8 @@ static void player_task(void *pvParameters) {
         shortMedian = MEDIANFILTER_Insert(&shortMedianFilter, avg);
         miniMedian = MEDIANFILTER_Insert(&miniMedianFilter, avg);
 
-        // resync if we are getting very late / early.
-        // hopefully being early will get ok
-        // through apll speed control
+        // resync hard if we are getting very late / early.
+        // rest gets tuned in through apll speed control
         if ((uxQueueMessagesWaiting(pcmChkQHdl) == 0) ||
             ((abs(avg) > hardResyncThreshold) &&
              MEDIANFILTER_isFull(&shortMedianFilter))) {
@@ -1344,26 +1343,8 @@ static void player_task(void *pvParameters) {
             chnk = NULL;
           }
 
-          // get count of chunks we are late for
-          uint32_t c = ceil((float)age / (float)chkDur_us);  // round up
-          // now clear all those chunks which are probably late too
-          while (c--) {
-            ret = xQueueReceive(pcmChkQHdl, &chnk, pdMS_TO_TICKS(1));
-            if (ret == pdPASS) {
-              free_pcm_chunk(chnk);
-              chnk = NULL;
-            } else {
-              break;
-            }
-          }
-
           wifi_ap_record_t ap;
           esp_wifi_sta_get_ap_info(&ap);
-
-          timer_pause(TIMER_GROUP_1, TIMER_1);
-          timer_set_auto_reload(TIMER_GROUP_1, TIMER_1, TIMER_AUTORELOAD_DIS);
-
-          i2s_custom_stop(I2S_NUM_0);
 
           ESP_LOGW(TAG,
                    "RESYNCING HARD 2: age %lldus, latency %lldus, free "
@@ -1371,6 +1352,25 @@ static void player_task(void *pvParameters) {
                    avg, diff2Server, heap_caps_get_free_size(MALLOC_CAP_32BIT),
                    heap_caps_get_largest_free_block(MALLOC_CAP_32BIT),
                    uxQueueMessagesWaiting(pcmChkQHdl), ap.rssi);
+
+          //          // get count of chunks we are late for
+          //          uint32_t c = ceil((float)age / (float)chkDur_us);  //
+          //          round up
+          //          // now clear all those chunks which are probably late too
+          //          while (c--) {
+          //            ret = xQueueReceive(pcmChkQHdl, &chnk,
+          //            pdMS_TO_TICKS(1)); if (ret == pdPASS) {
+          //              free_pcm_chunk(chnk);
+          //              chnk = NULL;
+          //            } else {
+          //              break;
+          //            }
+          //          }
+
+          timer_pause(TIMER_GROUP_1, TIMER_1);
+          timer_set_auto_reload(TIMER_GROUP_1, TIMER_1, TIMER_AUTORELOAD_DIS);
+
+          i2s_custom_stop(I2S_NUM_0);
 
           initialSync = 0;
 
@@ -1406,16 +1406,16 @@ static void player_task(void *pvParameters) {
 
           //           ESP_LOGI (TAG, "%d, %lldus, %lldus %llds, %lld.%lldms",
           //           dir, age, avg, sec, msec, usec);
-          // ESP_LOGI(TAG, "%d, %lldus, %lldus, %lldus, q:%d", dir, avg,
-          // shortMedian, miniMedian, uxQueueMessagesWaiting(pcmChkQHdl));
-          // ESP_LOGI( TAG, "8b f %d b %d",
-          // heap_caps_get_free_size(MALLOC_CAP_8BIT | MALLOC_CAP_INTERNAL),
-          // heap_caps_get_largest_free_block(MALLOC_CAP_8BIT |
-          // MALLOC_CAP_INTERNAL));
-          // ESP_LOGI( TAG, "32b f %d b %d",
-          // heap_caps_get_free_size(MALLOC_CAP_32BIT |
-          // MALLOC_CAP_EXEC), heap_caps_get_largest_free_block
-          // (MALLOC_CAP_32BIT | MALLOC_CAP_EXEC));
+          //           ESP_LOGI(TAG, "%d, %lldus, %lldus, %lldus, q:%d", dir,
+          //           avg, shortMedian, miniMedian,
+          //           uxQueueMessagesWaiting(pcmChkQHdl)); ESP_LOGI( TAG, "8b f
+          //           %d b %d", heap_caps_get_free_size(MALLOC_CAP_8BIT |
+          //           MALLOC_CAP_INTERNAL),
+          //           heap_caps_get_largest_free_block(MALLOC_CAP_8BIT |
+          //           MALLOC_CAP_INTERNAL)); ESP_LOGI( TAG, "32b f %d b %d",
+          //           heap_caps_get_free_size(MALLOC_CAP_32BIT |
+          //           MALLOC_CAP_EXEC), heap_caps_get_largest_free_block
+          //           (MALLOC_CAP_32BIT | MALLOC_CAP_EXEC));
         }
 
         dir = 0;

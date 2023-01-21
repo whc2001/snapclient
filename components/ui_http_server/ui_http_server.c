@@ -33,6 +33,8 @@ static const char *TAG = "HTTP";
 
 static QueueHandle_t xQueueHttp;
 
+static esp_netif_t *netInterface = NULL;
+
 /**
  *
  */
@@ -323,8 +325,8 @@ esp_err_t start_server(const char *base_path, int port) {
 static void http_server_task(void *pvParameters) {
   /* Get the local IP address */
   esp_netif_ip_info_t ip_info;
-  ESP_ERROR_CHECK(esp_netif_get_ip_info(
-      esp_netif_get_handle_from_ifkey("WIFI_STA_DEF"), &ip_info));
+
+  ESP_ERROR_CHECK(esp_netif_get_ip_info(netInterface, &ip_info));
 
   char ipString[64];
   sprintf(ipString, IPSTR, IP2STR(&ip_info.ip));
@@ -402,14 +404,24 @@ static void http_server_task(void *pvParameters) {
 /**
  *
  */
-void init_http_server_task(void) {
+void init_http_server_task(char *key) {
+  if (!key) {
+    ESP_LOGE(TAG,
+             "key should be \"WIFI_STA_DEF\", \"WIFI_AP_DEF\" or \"ETH_DEF\"");
+    return;
+  }
+
+  netInterface = esp_netif_get_handle_from_ifkey(key);
+  if (!netInterface) {
+    ESP_LOGE(TAG, "can't get net interface for %s", key);
+    return;
+  }
+
   // Initialize SPIFFS
   ESP_LOGI(TAG, "Initializing SPIFFS");
   if (SPIFFS_Mount("/html", "storage", 6) != ESP_OK) {
     ESP_LOGE(TAG, "SPIFFS mount failed");
-    while (1) {
-      vTaskDelay(1);
-    }
+    return;
   }
 
   // Create Queue

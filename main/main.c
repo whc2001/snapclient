@@ -12,6 +12,7 @@
 #include "esp_log.h"
 #include "esp_system.h"
 #include "esp_wifi.h"
+#include "eth_interface.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/event_groups.h"
 #include "freertos/task.h"
@@ -2670,7 +2671,15 @@ void app_main(void) {
   esp_log_level_set("HEADPHONE", ESP_LOG_NONE);
   esp_log_level_set("gpio", ESP_LOG_NONE);
 
-  esp_timer_init();
+#if CONFIG_SNAPCLIENT_ENABLE_ETHERNET
+  // ethernet pcb reset pin
+  gpio_config_t cfg = {.pin_bit_mask = BIT64(GPIO_NUM_17),
+                       .mode = GPIO_MODE_DEF_INPUT,
+                       .pull_up_en = GPIO_PULLUP_DISABLE,
+                       .pull_down_en = GPIO_PULLDOWN_ENABLE,
+                       .intr_type = GPIO_INTR_DISABLE};
+  gpio_config(&cfg);
+#endif
 
   // some codecs need i2s mclk for initialization
   i2s_config_t i2s_config0 = {
@@ -2707,13 +2716,19 @@ void app_main(void) {
   init_player();
   // setup_ma120();
 
+#if CONFIG_SNAPCLIENT_ENABLE_ETHERNET
+  eth_init();
+  // pass "WIFI_STA_DEF", "WIFI_AP_DEF", "ETH_DEF"
+  init_http_server_task("ETH_DEF");
+#else
   // Enable and setup WIFI in station mode and connect to Access point setup in
   // menu config or set up provisioning mode settable in menuconfig
   wifi_init();
   ESP_LOGI(TAG, "Connected to AP");
-
   // http server for control operations and user interface
-  init_http_server_task();
+  // pass "WIFI_STA_DEF", "WIFI_AP_DEF", "ETH_DEF"
+  init_http_server_task("WIFI_STA_DEF");
+#endif
 
   // Enable websocket server
   //  ESP_LOGI(TAG, "Setup ws server");
