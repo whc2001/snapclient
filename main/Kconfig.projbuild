@@ -25,4 +25,15 @@ menu "Snapcast Configuration"
         default "ESP32-Caster"
         help
             Name of the client to register the snapserver.
+
+	menu "HTTP Server Setting"
+
+		config WEB_PORT
+			int "User interface HTTP Server Port"
+			default 8000
+			help
+				HTTP server port to use.
+
+	endmenu
+
 endmenu

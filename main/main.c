@@ -470,6 +470,17 @@ static void flac_decoder_task(void *pvParameters) {
   FLAC__StreamDecoderInitStatus init_status;
   snapcastSetting_t *scSet = (snapcastSetting_t *)pvParameters;
 
+  if (flacTaskQHdl != NULL) {
+    vQueueDelete(flacTaskQHdl);
+    flacTaskQHdl = NULL;
+  }
+
+  flacTaskQHdl = xQueueCreate(8, sizeof(flacData_t *));
+  if (flacTaskQHdl == NULL) {
+    ESP_LOGE(TAG, "Failed to create flac flacTaskQHdl");
+    return;
+  }
+
   if (decoderReadQHdl != NULL) {
     vQueueDelete(decoderReadQHdl);
     decoderReadQHdl = NULL;
@@ -531,17 +542,6 @@ void flac_task(void *pvParameters) {
 #if CONFIG_USE_DSP_PROCESSOR
   int flow_drain_counter = 0;
 #endif
-
-  if (flacTaskQHdl != NULL) {
-    vQueueDelete(flacTaskQHdl);
-    flacTaskQHdl = NULL;
-  }
-
-  flacTaskQHdl = xQueueCreate(8, sizeof(flacData_t *));
-  if (flacTaskQHdl == NULL) {
-    ESP_LOGE(TAG, "Failed to create flac flacTaskQHdl");
-    return;
-  }
 
   while (1) {
     xQueueReceive(flacTaskQHdl, &pFlacData,
@@ -643,7 +643,13 @@ void flac_task(void *pvParameters) {
  *
  */
 esp_err_t audio_set_mute(bool mute) {
-  return audio_hal_set_mute(board_handle->audio_hal, mute);
+  if (!board_handle) {
+    ESP_LOGW(TAG, "audio board not initialized yet");
+
+    return ESP_OK;
+  } else {
+    return audio_hal_set_mute(board_handle->audio_hal, mute);
+  }
 }
 
 /**
@@ -1984,6 +1990,13 @@ static void http_get_task(void *pvParameters) {
                                 FLAC_DECODER_TASK_CORE_ID);
                           }
 
+                          // TODO: find a smarter way for
+                          // this wait for task creation done
+                          // maybe use task notification
+                          while (flacTaskQHdl == NULL) {
+                            vTaskDelay(10);
+                          }
+
 #if TEST_DECODER_TASK
                           if (t_flac_task == NULL) {
                             xTaskCreatePinnedToCore(
@@ -2000,13 +2013,6 @@ static void http_get_task(void *pvParameters) {
                           memcpy(pFlacData->inData, tmp, typedMsgLen);
                           pFlacData->outData = NULL;
                           pFlacData->type = SNAPCAST_MESSAGE_CODEC_HEADER;
-
-                          // TODO: find a smarter way for
-                          // this wait for task creation done
-                          // maybe use task notification
-                          while (flacTaskQHdl == NULL) {
-                            vTaskDelay(10);
-                          }
 
                           // ESP_LOGE(TAG, "%s: flacTaskQHdl start codec
                           // header", __func__);
@@ -2666,6 +2672,28 @@ void app_main(void) {
 
   esp_timer_init();
 
+  // some codecs need i2s mclk for initialization
+  i2s_config_t i2s_config0 = {
+      .mode = I2S_MODE_MASTER | I2S_MODE_TX,  // Only TX
+      .sample_rate = 44100,
+      .bits_per_sample = 16,
+      .channel_format = I2S_CHANNEL_FMT_RIGHT_LEFT,  // 2-channels
+      .communication_format = I2S_COMM_FORMAT_STAND_I2S,
+      .dma_buf_count = 2,
+      .dma_buf_len = 128,
+      .intr_alloc_flags = 1,  // Default interrupt priority
+      .use_apll = true,
+      .fixed_mclk = 0,
+      .tx_desc_auto_clear = true  // Auto clear tx descriptor on underflow
+  };
+  i2s_pin_config_t pin_config0;
+  get_i2s_pins(I2S_NUM_0, &pin_config0);
+
+  i2s_custom_driver_uninstall(I2S_NUM_0);
+  i2s_custom_driver_install(I2S_NUM_0, &i2s_config0, 0, NULL);
+  i2s_custom_set_pin(I2S_NUM_0, &pin_config0);
+  i2s_mclk_gpio_select(I2S_NUM_0, CONFIG_MASTER_I2S_MCLK_PIN);
+
   ESP_LOGI(TAG, "Start codec chip");
   board_handle = audio_board_init();
   ESP_LOGI(TAG, "Audio board_init done");
@@ -2674,11 +2702,10 @@ void app_main(void) {
                        AUDIO_HAL_CTRL_START);
   audio_hal_set_mute(board_handle->audio_hal,
                      true);  // ensure no noise is sent after firmware crash
-  i2s_mclk_gpio_select(0, 0);
-  // setup_ma120();
 
   ESP_LOGI(TAG, "init player");
   init_player();
+  // setup_ma120();
 
   // Enable and setup WIFI in station mode and connect to Access point setup in
   // menu config or set up provisioning mode settable in menuconfig

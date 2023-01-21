@@ -19,6 +19,8 @@ menu "Custom Audio Board"
         config DAC_MA120X0
             bool "Infineon MA120X0 ClassD AMP"
 
+        config DAC_ADAU1961
+            bool "Analog Devices ADAU1961 DAC"
 
     endchoice
 
@@ -41,6 +43,12 @@ menu "Custom Audio Board"
     endmenu
 
 	menu "I2S master interface"
+       	config MASTER_I2S_MCLK_PIN
+            int "Master i2s mclk"
+            default 0
+            help
+                Master audio interface master clock.
+
         config MASTER_I2S_BCK_PIN
             int "Master i2s bck"
             default 23
@@ -61,7 +69,6 @@ menu "Custom Audio Board"
     endmenu
 
 	menu "I2S slave interface"
-
         config SLAVE_I2S_BCK_PIN
             int "Slave i2s bck"
             default 26

@@ -170,6 +170,8 @@ static esp_err_t player_setup_i2s(i2s_port_t i2sNum,
   i2s_custom_driver_install(i2sNum, &i2s_config0, 0, NULL);
   i2s_custom_set_pin(i2sNum, &pin_config0);
 
+  i2s_mclk_gpio_select(i2sNum, CONFIG_MASTER_I2S_MCLK_PIN);
+
   return 0;
 }
 
@@ -1319,8 +1321,8 @@ static void player_task(void *pvParameters) {
 
       const bool enableControlLoop = true;
 
-      const int64_t shortOffset = 2;  // 8;            // 20;  //µs, softsync
-      const int64_t miniOffset = 1;   //µs, softsync
+      const int64_t shortOffset = 2;              //µs, softsync
+      const int64_t miniOffset = 1;               //µs, softsync
       const int64_t hardResyncThreshold = 10000;  //µs, hard sync
 
       if (initialSync == 1) {
@@ -1331,11 +1333,12 @@ static void player_task(void *pvParameters) {
         shortMedian = MEDIANFILTER_Insert(&shortMedianFilter, avg);
         miniMedian = MEDIANFILTER_Insert(&miniMedianFilter, avg);
 
-        // resync if we are getting late.
+        // resync if we are getting very late / early.
         // hopefully being early will get ok
         // through apll speed control
         if ((uxQueueMessagesWaiting(pcmChkQHdl) == 0) ||
-            (abs(avg) > hardResyncThreshold)) {
+            ((abs(avg) > hardResyncThreshold) &&
+             MEDIANFILTER_isFull(&shortMedianFilter))) {
           if (chnk != NULL) {
             free_pcm_chunk(chnk);
             chnk = NULL;

@@ -10,6 +10,12 @@ if(CONFIG_AUDIO_BOARD_CUSTOM)
 	./generic_board/board_pins_config.c
 	)
 
+  if (CONFIG_DAC_ADAU1961)
+    message(STATUS "Selected DAC is " CONFIG_DAC_ADAU1961)
+	list(APPEND COMPONENT_ADD_INCLUDEDIRS ./adau1961/include)
+	list(APPEND COMPONENT_SRCS ./adau1961/adau1961.c)
+  endif()
+
   if(CONFIG_DAC_PCM51XX)
 	message(STATUS "Selected DAC is " CONFIG_DAC_PCM15XX)
 	list(APPEND COMPONENT_ADD_INCLUDEDIRS ./pcm51xx/include)
