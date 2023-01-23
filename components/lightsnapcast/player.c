@@ -29,6 +29,8 @@
 
 #include <math.h>
 
+#define USE_SAMPLE_INSERTION 0  // TODO: doesn't work as intended
+
 #define SYNC_TASK_PRIORITY (configMAX_PRIORITIES - 1)
 #define SYNC_TASK_CORE_ID 1  // tskNO_AFFINITY
 
@@ -115,6 +117,11 @@ static esp_err_t player_setup_i2s(i2s_port_t i2sNum,
   i2sDmaBufCnt = __dmaBufCnt * CHNK_CTRL_CNT;
   i2sDmaBufMaxLen = __dmaBufLen;
 
+#if USE_SAMPLE_INSERTION
+  i2sDmaBufCnt = 128;
+  i2sDmaBufMaxLen = 9;
+#endif
+
   fi2s_clk = setting->sr * setting->ch * setting->bits * m_scale;
 
   apll_normal_predefine[0] = setting->bits;
@@ -170,7 +177,11 @@ static esp_err_t player_setup_i2s(i2s_port_t i2sNum,
   i2s_custom_driver_install(i2sNum, &i2s_config0, 0, NULL);
   i2s_custom_set_pin(i2sNum, &pin_config0);
 
+#if CONFIG_AUDIO_BOARD_CUSTOM
   i2s_mclk_gpio_select(i2sNum, CONFIG_MASTER_I2S_MCLK_PIN);
+#else
+  i2s_mclk_gpio_select(i2sNum, GPIO_NUM_0);
+#endif
 
   return 0;
 }
@@ -1001,6 +1012,7 @@ static void player_task(void *pvParameters) {
   int initialSync = 0;
   int64_t avg = 0;
   int dir = 0;
+  uint32_t dir_insert_sample = 0;
   int64_t buf_us = 0;
   pcm_chunk_fragment_t *fragment = NULL;
   size_t written;
@@ -1379,6 +1391,18 @@ static void player_task(void *pvParameters) {
           continue;
         }
 
+#if USE_SAMPLE_INSERTION  // WIP: insert samples to adjust sync
+        if ((enableControlLoop == true) &&
+            (MEDIANFILTER_isFull(&shortMedianFilter))) {
+          if (avg < -miniOffset) {  // we are early
+            dir = -1;
+            dir_insert_sample = -1;
+          } else if (avg > miniOffset) {  // we are late
+            dir = 1;
+            dir_insert_sample = 1;
+          }
+        }
+#else  // use APLL to adjust sync
         if ((enableControlLoop == true) &&
             (MEDIANFILTER_isFull(&shortMedianFilter))) {
           if ((shortMedian < -shortOffset) && (miniMedian < -miniOffset) &&
@@ -1391,6 +1415,7 @@ static void player_task(void *pvParameters) {
 
           adjust_apll(dir);
         }
+#endif
 
         const uint32_t tmpCntInit = 1;  // 250  // every 6s
         static uint32_t tmpcnt = 1;
@@ -1406,9 +1431,10 @@ static void player_task(void *pvParameters) {
 
           //           ESP_LOGI (TAG, "%d, %lldus, %lldus %llds, %lld.%lldms",
           //           dir, age, avg, sec, msec, usec);
-          //           ESP_LOGI(TAG, "%d, %lldus, %lldus, %lldus, q:%d", dir,
-          //           avg, shortMedian, miniMedian,
-          //           uxQueueMessagesWaiting(pcmChkQHdl)); ESP_LOGI( TAG, "8b f
+          //  ESP_LOGI(TAG, "%d, %lldus, %lldus, %lldus, q:%d", dir,
+          //  avg, shortMedian, miniMedian,
+          //  uxQueueMessagesWaiting(pcmChkQHdl));
+          //           ESP_LOGI( TAG, "8b f
           //           %d b %d", heap_caps_get_free_size(MALLOC_CAP_8BIT |
           //           MALLOC_CAP_INTERNAL),
           //           heap_caps_get_largest_free_block(MALLOC_CAP_8BIT |
@@ -1427,10 +1453,28 @@ static void player_task(void *pvParameters) {
         if (p_payload != NULL) {
           do {
             written = 0;
+
+#if USE_SAMPLE_INSERTION
+            uint32_t sampleSizeInBytes = 4 * 3;
+
+            if (dir_insert_sample == -1) {
+              if (i2s_custom_write(I2S_NUM_0, p_payload,
+                                   (size_t)sampleSizeInBytes, &written,
+                                   portMAX_DELAY) != ESP_OK) {
+                ESP_LOGE(TAG, "i2s_playback_task:  I2S write error %d", 1);
+              }
+            } else if (dir_insert_sample == 1) {
+              size -= sampleSizeInBytes;
+            }
+
+            dir_insert_sample = 0;
+#endif
+
             if (i2s_custom_write(I2S_NUM_0, p_payload, (size_t)size, &written,
                                  portMAX_DELAY) != ESP_OK) {
               ESP_LOGE(TAG, "i2s_playback_task: I2S write error %d", size);
             }
+
             if (written < size) {
               ESP_LOGE(TAG, "i2s_playback_task: I2S didn't write all data");
             }

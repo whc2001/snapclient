@@ -12,7 +12,9 @@
 #include "esp_log.h"
 #include "esp_system.h"
 #include "esp_wifi.h"
+#if CONFIG_SNAPCLIENT_ENABLE_ETHERNET
 #include "eth_interface.h"
+#endif
 #include "freertos/FreeRTOS.h"
 #include "freertos/event_groups.h"
 #include "freertos/task.h"
@@ -2681,6 +2683,7 @@ void app_main(void) {
   gpio_config(&cfg);
 #endif
 
+#if CONFIG_AUDIO_BOARD_CUSTOM
   // some codecs need i2s mclk for initialization
   i2s_config_t i2s_config0 = {
       .mode = I2S_MODE_MASTER | I2S_MODE_TX,  // Only TX
@@ -2701,7 +2704,9 @@ void app_main(void) {
   i2s_custom_driver_uninstall(I2S_NUM_0);
   i2s_custom_driver_install(I2S_NUM_0, &i2s_config0, 0, NULL);
   i2s_custom_set_pin(I2S_NUM_0, &pin_config0);
+
   i2s_mclk_gpio_select(I2S_NUM_0, CONFIG_MASTER_I2S_MCLK_PIN);
+#endif
 
   ESP_LOGI(TAG, "Start codec chip");
   board_handle = audio_board_init();
