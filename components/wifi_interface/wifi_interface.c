@@ -20,6 +20,11 @@
 #include <wifi_provisioning/scheme_softap.h>
 #endif
 
+#if ENABLE_WIFI_PROVISIONING
+static const char *provPwd = CONFIG_WIFI_PROVISIONING_PASSWORD;
+static const char *provSsid = CONFIG_WIFI_PROVISIONING_SSID;
+#endif
+
 static const char *TAG = "WIFI";
 
 char mac_address[18];
@@ -95,7 +100,7 @@ static void event_handler(void *arg, esp_event_base_t event_base, int event_id,
           break;
         case WIFI_PROV_END:
           /* De-initialize manager once provisioning is finished */
-          wifi_prov_mgr_deinit();
+          ESP_LOGI(TAG, "Provisioning end");
           break;
         default:
           break;
@@ -108,9 +113,11 @@ static void event_handler(void *arg, esp_event_base_t event_base, int event_id,
 #if ENABLE_WIFI_PROVISIONING
 static void get_device_service_name(char *service_name, size_t max) {
   uint8_t eth_mac[6];
-  const char *ssid_prefix = "PROV_";
+  const char *ssid_prefix = provSsid;
+
   esp_wifi_get_mac(WIFI_IF_STA, eth_mac);
-  snprintf(service_name, max, "%s%02X%02X%02X", ssid_prefix, eth_mac[3],
+
+  snprintf(service_name, max, "%s_%02X%02X%02X", ssid_prefix, eth_mac[3],
            eth_mac[4], eth_mac[5]);
 }
 #endif
@@ -169,7 +176,7 @@ void wifi_init(void) {
     ESP_LOGI(TAG, "Starting provisioning");
 
     // Wi-Fi SSID when scheme is wifi_prov_scheme_softap
-    char service_name[12];
+    char service_name[27];
     get_device_service_name(service_name, sizeof(service_name));
 
     /* What is the security level that we want (0 or 1):
@@ -191,7 +198,7 @@ void wifi_init(void) {
      *     - Wi-Fi password when scheme is wifi_prov_scheme_softap
      *     - simply ignored when scheme is wifi_prov_scheme_ble
      */
-    const char *service_key = "12345678";
+    const char *service_key = provPwd;
 
     /* An optional endpoint that applications can create if they expect to
      * get some additional custom data during provisioning workflow.
@@ -214,8 +221,8 @@ void wifi_init(void) {
      * then release the resources of the manager. Since in this case
      * de-initialization is triggered by the default event loop handler, we
      * don't need to call the following */
-    // wifi_prov_mgr_wait();
-    // wifi_prov_mgr_deinit();
+    wifi_prov_mgr_wait();
+    wifi_prov_mgr_deinit();
   } else {
     ESP_LOGI(TAG, "Already provisioned, starting Wi-Fi STA");
 

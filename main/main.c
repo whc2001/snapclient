@@ -2676,9 +2676,9 @@ void app_main(void) {
 #if CONFIG_SNAPCLIENT_ENABLE_ETHERNET
   // ethernet pcb reset pin
   gpio_config_t cfg = {.pin_bit_mask = BIT64(GPIO_NUM_17),
-                       .mode = GPIO_MODE_DEF_INPUT,
+                       .mode = GPIO_MODE_DEF_OUTPUT,
                        .pull_up_en = GPIO_PULLUP_DISABLE,
-                       .pull_down_en = GPIO_PULLDOWN_ENABLE,
+                       .pull_down_en = GPIO_PULLDOWN_DISABLE,
                        .intr_type = GPIO_INTR_DISABLE};
   gpio_config(&cfg);
 #endif
