@@ -563,12 +563,27 @@ esp_err_t adau1961_set_mute(bool enable) {
   esp_err_t ret = ESP_OK;
   uint8_t data[3];
 
-  // Playback right and left channel enable
-  data[0] = (uint8_t)(R35_PLAYBACK_PWR_MGMT >> 8);
-  data[1] = (uint8_t)R35_PLAYBACK_PWR_MGMT;
-  data[2] = (!enable << 1) | (!enable << 0);
+  // left channel
+  // get mixer 3 control reg
+  data[0] = (uint8_t)(R22_PLAYBACK_MIXER3_LEFT_CTRL0 >> 8);
+  data[1] = (uint8_t)R22_PLAYBACK_MIXER3_LEFT_CTRL0;
+  ret = i2c_bus_read_bytes(i2c_handler, adau1961_addr, data, 2, &data[2], 1);
+  ADAU1961_ASSERT(ret, "Fail to read R22_PLAYBACK_MIXER3_LEFT_CTRL0", ESP_FAIL);
+
+  data[2] = (!enable << 5);
   ret = i2c_bus_write_data(i2c_handler, adau1961_addr, data, 3);
-  ADAU1961_ASSERT(ret, "Fail to write R35_PLAYBACK_PWR_MGMT", ESP_FAIL);
+  ADAU1961_ASSERT(ret, "Fail to set R22_PLAYBACK_MIXER3_LEFT_CTRL0", ESP_FAIL);
+
+  // right channel
+  // get mixer 4 control reg
+  data[0] = (uint8_t)(R24_PLAYBACK_MIXER4_RIGHT_CTRL0 >> 8);
+  data[1] = (uint8_t)R24_PLAYBACK_MIXER4_RIGHT_CTRL0;
+  ret = i2c_bus_read_bytes(i2c_handler, adau1961_addr, data, 2, &data[2], 1);
+  ADAU1961_ASSERT(ret, "Fail to read R22_PLAYBACK_MIXER3_LEFT_CTRL0", ESP_FAIL);
+
+  data[2] = (!enable << 6);
+  ret = i2c_bus_write_data(i2c_handler, adau1961_addr, data, 3);
+  ADAU1961_ASSERT(ret, "Fail to set R24_PLAYBACK_MIXER4_RIGHT_CTRL0", ESP_FAIL);
 
   return ret;
 }

@@ -118,8 +118,6 @@ static audio_board_handle_t board_handle = NULL;
 /* Logging tag */
 static const char *TAG = "SC";
 
-extern char mac_address[18];
-
 // static QueueHandle_t playerChunkQueueHandle = NULL;
 SemaphoreHandle_t timeSyncSemaphoreHandle = NULL;
 
@@ -843,6 +841,17 @@ static void http_get_task(void *pvParameters) {
 
     ESP_LOGI(TAG, "netconn connected");
 
+    char mac_address[18];
+    uint8_t base_mac[6];
+    // Get MAC address for WiFi station
+#if CONFIG_SNAPCLIENT_ENABLE_ETHERNET
+    esp_read_mac(base_mac, ESP_MAC_ETH);
+#else
+    esp_read_mac(base_mac, ESP_MAC_WIFI_STA);
+#endif
+    sprintf(mac_address, "%02X:%02X:%02X:%02X:%02X:%02X", base_mac[0],
+            base_mac[1], base_mac[2], base_mac[3], base_mac[4], base_mac[5]);
+
     now = esp_timer_get_time();
 
     // init base message
@@ -1118,14 +1127,14 @@ static void http_get_task(void *pvParameters) {
 
                   typedMsgCurrentPos = 0;
 
-                  // ESP_LOGI(TAG,"BM type %d ts %d.%d",
-                  // base_message_rx.type,
-                  // base_message_rx.received.sec,
-                  // base_message_rx.received.usec);
-                  //								ESP_LOGI(TAG,"%d
-                  //%d.%d", base_message_rx.type,
-                  // base_message_rx.received.sec,
-                  // base_message_rx.received.usec);
+                  //                   ESP_LOGI(TAG,"BM type %d ts %d.%d",
+                  //                   base_message_rx.type,
+                  //                   base_message_rx.received.sec,
+                  //                   base_message_rx.received.usec);
+                  //                  								ESP_LOGI(TAG,"%d
+                  //                  %d.%d", base_message_rx.type,
+                  //                   base_message_rx.received.sec,
+                  //                   base_message_rx.received.usec);
 
                   state = TYPED_MESSAGE_STATE;
                   break;
@@ -2211,9 +2220,9 @@ static void http_get_task(void *pvParameters) {
                     case 3: {
                       typedMsgLen |= (*start & 0xFF) << 24;
 
-                      // ESP_LOGI(TAG,
-                      // "server settings string is %d long",
-                      // typedMsgLen);
+                      //                       ESP_LOGI(TAG,
+                      //                       "server settings string is %d
+                      //                       long", typedMsgLen);
 
                       typedMsgCurrentPos++;
                       start++;
@@ -2674,11 +2683,27 @@ void app_main(void) {
   esp_log_level_set("gpio", ESP_LOG_NONE);
 
 #if CONFIG_SNAPCLIENT_ENABLE_ETHERNET
-  // ethernet pcb reset pin
-  gpio_config_t cfg = {.pin_bit_mask = BIT64(GPIO_NUM_17),
-                       .mode = GPIO_MODE_DEF_OUTPUT,
+  // clang-format off
+  // nINT/REFCLKO Function Select Configuration Strap
+  //  • When nINTSEL is floated or pulled to
+  //    VDD2A, nINT is selected for operation on the
+  //    nINT/REFCLKO pin (default).
+  //  • When nINTSEL is pulled low to VSS, REF-
+  //    CLKO is selected for operation on the nINT/
+  //    REFCLKO pin.
+  //
+  // LAN8720 doesn't stop REFCLK while in reset, so we leave the
+  // strap floated. It is connected to IO0 on ESP32 so we get nINT
+  // function with a HIGH pin value, which is also perfect during boot.
+  // Before initializing LAN8720 (which resets the PHY) we pull the
+  // strap low and this results in REFCLK enabled which is needed
+  // for MAC unit.
+  //
+  // clang-format on
+  gpio_config_t cfg = {.pin_bit_mask = BIT64(GPIO_NUM_5),
+                       .mode = GPIO_MODE_DEF_INPUT,
                        .pull_up_en = GPIO_PULLUP_DISABLE,
-                       .pull_down_en = GPIO_PULLDOWN_DISABLE,
+                       .pull_down_en = GPIO_PULLDOWN_ENABLE,
                        .intr_type = GPIO_INTR_DISABLE};
   gpio_config(&cfg);
 #endif

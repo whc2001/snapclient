@@ -397,36 +397,28 @@ int32_t player_send_snapcast_setting(snapcastSetting_t *setting) {
       (curSet.codec != setting->codec) || (curSet.muted != setting->muted) ||
       (curSet.sr != setting->sr) || (curSet.volume != setting->volume) ||
       (curSet.cDacLat_ms != setting->cDacLat_ms)) {
+    ret = player_set_snapcast_settings(setting);
+    if (ret != pdPASS) {
+      ESP_LOGE(TAG,
+               "player_send_snapcast_setting: couldn't change "
+               "snapcast setting");
+    }
+
     // check if it is only volume / mute related setting, which is handled by
     // http_get_task()
-    if (((curSet.muted != setting->muted) ||
-         (curSet.volume != setting->volume)) &&
-        ((curSet.bits == setting->bits) && (curSet.buf_ms == setting->buf_ms) &&
-         (curSet.ch == setting->ch) &&
-         (curSet.chkInFrames == setting->chkInFrames) &&
-         (curSet.codec == setting->codec) && (curSet.sr == setting->sr) &&
-         (curSet.cDacLat_ms == setting->cDacLat_ms))) {
-      // no notify needed, only set changed parameters
-      ret = player_set_snapcast_settings(setting);
-      if (ret != pdPASS) {
-        ESP_LOGE(TAG,
-                 "player_send_snapcast_setting: couldn't change "
-                 "snapcast setting");
-      }
-    } else {
+    if ((((curSet.muted != setting->muted) ||
+          (curSet.volume != setting->volume)) &&
+         ((curSet.bits == setting->bits) &&
+          (curSet.buf_ms == setting->buf_ms) && (curSet.ch == setting->ch) &&
+          (curSet.chkInFrames == setting->chkInFrames) &&
+          (curSet.codec == setting->codec) && (curSet.sr == setting->sr) &&
+          (curSet.cDacLat_ms == setting->cDacLat_ms))) == false) {
+      // notify needed
       ret = xQueueOverwrite(snapcastSettingQueueHandle, &settingChanged);
       if (ret != pdPASS) {
         ESP_LOGE(TAG,
                  "player_send_snapcast_setting: couldn't notify "
                  "snapcast setting");
-      } else {
-        // notify successful, so change parameters
-        ret = player_set_snapcast_settings(setting);
-        if (ret != pdPASS) {
-          ESP_LOGE(TAG,
-                   "player_send_snapcast_setting: couldn't "
-                   "change snapcast setting");
-        }
       }
     }
   }
@@ -1063,6 +1055,8 @@ static void player_task(void *pvParameters) {
 
         if ((scSet.sr != __scSet.sr) || (scSet.bits != __scSet.bits) ||
             (scSet.ch != __scSet.ch)) {
+          i2s_custom_start(I2S_NUM_0);
+          audio_set_mute(true);
           i2s_custom_stop(I2S_NUM_0);
 
           ret = player_setup_i2s(I2S_NUM_0, &currentSnapcastSetting);
@@ -1079,8 +1073,6 @@ static void player_task(void *pvParameters) {
           i2s_custom_set_clk(I2S_NUM_0, __scSet.sr, __scSet.bits, __scSet.ch);
 
           initialSync = 0;
-
-          audio_set_mute(true);
         }
 
         if ((__scSet.buf_ms != scSet.buf_ms) ||
@@ -1382,11 +1374,11 @@ static void player_task(void *pvParameters) {
           timer_pause(TIMER_GROUP_1, TIMER_1);
           timer_set_auto_reload(TIMER_GROUP_1, TIMER_1, TIMER_AUTORELOAD_DIS);
 
+          audio_set_mute(true);
+
           i2s_custom_stop(I2S_NUM_0);
 
           initialSync = 0;
-
-          audio_set_mute(true);
 
           continue;
         }

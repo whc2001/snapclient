@@ -27,7 +27,7 @@ static const char *provSsid = CONFIG_WIFI_PROVISIONING_SSID;
 
 static const char *TAG = "WIFI";
 
-char mac_address[18];
+static char mac_address[18];
 
 EventGroupHandle_t s_wifi_event_group;
 
