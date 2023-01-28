@@ -928,7 +928,9 @@ static void http_get_task(void *pvParameters) {
     size_t typedMsgCurrentPos = 0;
     uint32_t typedMsgLen = 0;
     uint32_t offset = 0;
+    uint32_t payloadOffset = 0;
     uint32_t tmpData = 0;
+    int32_t payloadDataShift = 0;
     int flow_drain_counter = 0;
 
 #define BASE_MESSAGE_STATE 0
@@ -1427,122 +1429,60 @@ static void http_get_task(void *pvParameters) {
                           }
 
                           case PCM: {
+                            size_t _tmp = tmp;
+
+                            offset = 0;
+
                             if (pcmData == NULL) {
                               if (allocate_pcm_chunk_memory(
                                       &pcmData, wire_chnk.size) < 0) {
                                 pcmData = NULL;
                               }
 
-                              offset = 0;
+                              tmpData = 0;
                               remainderSize = 0;
+                              payloadDataShift = 3;
+                              payloadOffset = 0;
                             }
 
-                            //                            if (pcmData != NULL)
-                            {
-                              volatile uint32_t *sample;
+                            while (_tmp--) {
+                              tmpData |= ((uint32_t)start[offset++]
+                                          << (8 * payloadDataShift));
 
-                              int max = 0, begin = 0;
-
-                              while (remainderSize) {
-                                tmpData |= ((uint32_t)start[begin++]
-                                            << (8 * (remainderSize - 1)));
-
-                                remainderSize--;
-                                if (remainderSize < 0) {
-                                  ESP_LOGE(TAG,
-                                           "shift < 0 this "
-                                           "shouldn't "
-                                           "happen");
-
-                                  return;
-                                }
-                              }
-
-                              // check if we need to write
-                              // a remaining sample
-                              if (begin > 0) {
-                                // need to reorder bytes
-                                // in sample for correct
-                                // playback
-                                uint8_t dummy1;
-                                uint32_t dummy2 = 0;
-
-                                // TODO: find a more
-                                // clever way to do this,
-                                // best would be to
-                                // actually store it the
-                                // right way in the first
-                                // place
-                                dummy1 = tmpData >> 24;
-                                dummy2 |= (uint32_t)dummy1 << 16;
-                                dummy1 = tmpData >> 16;
-                                dummy2 |= (uint32_t)dummy1 << 24;
-                                dummy1 = tmpData >> 8;
-                                dummy2 |= (uint32_t)dummy1 << 0;
-                                dummy1 = tmpData >> 0;
-                                dummy2 |= (uint32_t)dummy1 << 8;
-                                tmpData = dummy2;
+                              payloadDataShift--;
+                              if (payloadDataShift < 0) {
+                                payloadDataShift = 3;
 
                                 if ((pcmData) && (pcmData->fragment->payload)) {
+                                  volatile uint32_t *sample;
+                                  uint8_t dummy1;
+                                  uint32_t dummy2 = 0;
+
+                                  // TODO: find a more
+                                  // clever way to do this,
+                                  // best would be to
+                                  // actually store it the
+                                  // right way in the first
+                                  // place
+                                  dummy1 = tmpData >> 24;
+                                  dummy2 |= (uint32_t)dummy1 << 16;
+                                  dummy1 = tmpData >> 16;
+                                  dummy2 |= (uint32_t)dummy1 << 24;
+                                  dummy1 = tmpData >> 8;
+                                  dummy2 |= (uint32_t)dummy1 << 0;
+                                  dummy1 = tmpData >> 0;
+                                  dummy2 |= (uint32_t)dummy1 << 8;
+                                  tmpData = dummy2;
+
                                   sample = (volatile uint32_t *)(&(
-                                      pcmData->fragment->payload[offset]));
+                                      pcmData->fragment
+                                          ->payload[payloadOffset]));
                                   *sample = (volatile uint32_t)tmpData;
+
+                                  payloadOffset += 4;
                                 }
 
-                                offset += 4;
-                              }
-
-                              remainderSize = (tmp - begin) % 4;
-                              max = (tmp - begin) - remainderSize;
-
-                              for (int i = begin; i < max; i += 4) {
-                                // TODO: for now
-                                // fragmented payload is
-                                // not supported and the
-                                // whole chunk is
-                                // expected to be in the
-                                // first fragment
-                                tmpData = ((uint32_t)start[i] << 16) |
-                                          ((uint32_t)start[i + 1] << 24) |
-                                          ((uint32_t)start[i + 2] << 0) |
-                                          ((uint32_t)start[i + 3] << 8);
-
-                                // ensure 32bit aligned write
-                                if ((pcmData) && (pcmData->fragment->payload)) {
-                                  sample = (volatile uint32_t *)(&(
-                                      pcmData->fragment->payload[offset]));
-                                  *sample = (volatile uint32_t)tmpData;
-                                }
-
-                                offset += 4;
-                              }
-
-                              tmpData = 0;
-                              while (remainderSize) {
-                                tmpData |= ((uint32_t)start[max++]
-                                            << (8 * (remainderSize - 1)));
-
-                                remainderSize--;
-
-                                if (remainderSize < 0) {
-                                  ESP_LOGE(TAG,
-                                           "shift < 0 this "
-                                           "shouldn't "
-                                           "happen");
-
-                                  return;
-                                }
-                              }
-
-                              remainderSize = (tmp - begin) % 4;
-                              if (remainderSize) {
-                                remainderSize =
-                                    4 - remainderSize;  // these are the still
-                                                        // needed bytes for next
-                                                        // round
-                                tmpData <<=
-                                    (8 * remainderSize);  // shift data to
-                                                          // correct position
+                                tmpData = 0;
                               }
                             }
 
@@ -1656,6 +1596,12 @@ static void http_get_task(void *pvParameters) {
 
                             case PCM: {
                               size_t decodedSize = wire_chnk.size;
+
+                              //                              ESP_LOGW(TAG, "got
+                              //                              PCM chunk,
+                              //                              typedMsgCurrentPos
+                              //                              %d",
+                              //                              typedMsgCurrentPos);
 
                               if (pcmData) {
                                 pcmData->timestamp = wire_chnk.timestamp;
@@ -2735,7 +2681,15 @@ void app_main(void) {
 
   ESP_LOGI(TAG, "Start codec chip");
   board_handle = audio_board_init();
-  ESP_LOGI(TAG, "Audio board_init done");
+  if (board_handle) {
+    ESP_LOGI(TAG, "Audio board_init done");
+  } else {
+    ESP_LOGE(TAG,
+             "Audio board couldn't be initialized. Check menuconfig if project "
+             "is configured right or check your wiring!");
+
+    vTaskDelay(portMAX_DELAY);
+  }
 
   audio_hal_ctrl_codec(board_handle->audio_hal, AUDIO_HAL_CODEC_MODE_BOTH,
                        AUDIO_HAL_CTRL_START);

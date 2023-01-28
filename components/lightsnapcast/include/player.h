@@ -68,6 +68,7 @@ int8_t free_pcm_chunk(pcm_chunk_message_t *pcmChunk);
 
 int32_t player_latency_insert(int64_t newValue);
 int32_t player_send_snapcast_setting(snapcastSetting_t *setting);
+int8_t player_get_snapcast_settings(snapcastSetting_t *setting);
 
 int32_t reset_latency_buffer(void);
 int32_t latency_buffer_full(bool *is_full, TickType_t wait);
