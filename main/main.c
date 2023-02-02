@@ -668,7 +668,6 @@ static void http_get_task(void *pvParameters) {
   int64_t tmpDiffToServer;
   int64_t lastTimeSync = 0;
   esp_timer_handle_t timeSyncMessageTimer = NULL;
-  uint16_t channels;
   esp_err_t err = 0;
   server_settings_message_t server_settings_message;
   bool received_header = false;
@@ -680,6 +679,7 @@ static void http_get_task(void *pvParameters) {
   // 0};
   flacData_t *pFlacData = NULL;
   pcm_chunk_message_t *pcmData = NULL;
+  uint8_t *opusData = NULL;
   ip_addr_t remote_ip;
   uint16_t remotePort = 0;
   int rc1 = ERR_OK, rc2 = ERR_OK;
@@ -932,6 +932,8 @@ static void http_get_task(void *pvParameters) {
     uint32_t tmpData = 0;
     int32_t payloadDataShift = 0;
     int flow_drain_counter = 0;
+
+    int16_t pcm_size = 120;
 
 #define BASE_MESSAGE_STATE 0
 #define TYPED_MESSAGE_STATE 1
@@ -1348,6 +1350,138 @@ static void http_get_task(void *pvParameters) {
 
                       if (received_header == true) {
                         switch (codec) {
+                          case OPUS: {
+                            if (opusData == NULL) {
+                              // TODO: insert some break condition if we wait
+                              // too long
+                              while ((opusData = (uint8_t *)malloc(
+                                          wire_chnk.size)) == NULL) {
+                                ESP_LOGE(TAG, "couldn't memory for opusData");
+
+                                vTaskDelay(pdMS_TO_TICKS(1));
+                              }
+
+                              payloadOffset = 0;
+                            }
+
+                            memcpy(&opusData[payloadOffset], start, tmp);
+                            payloadOffset += tmp;
+
+                            //                            ESP_LOGE(TAG,"payloadOffset
+                            //                            %d, wire_chnk.size
+                            //                            %d", payloadOffset,
+                            //                            wire_chnk.size);
+
+                            if (payloadOffset >= wire_chnk.size) {
+                              int frame_size = 0;
+                              int sample_count = 0;
+                              int samples_per_frame = 0;
+                              int frame_count;
+                              int16_t *audio;
+
+                              if ((samples_per_frame =
+                                       opus_packet_get_samples_per_frame(
+                                           opusData, scSet.sr)) < 0) {
+                                ESP_LOGE(TAG,
+                                         "couldn't get samples per frame count "
+                                         "of packet");
+                              }
+
+                              scSet.chkInFrames = samples_per_frame;
+
+                              //                              if ((frame_count =
+                              //                              opus_packet_get_nb_frames
+                              //                              (opusData,
+                              //                              wire_chnk.size)) <
+                              //                              0) {
+                              //                                ESP_LOGE(TAG,"couldn't
+                              //                                get frame count
+                              //                                of packet");
+                              //                              }
+                              //
+                              //                              if ((sample_count
+                              //                              =
+                              //                              opus_decoder_get_nb_samples
+                              //                              (opusDecoder,
+                              //                              opusData,
+                              //                              wire_chnk.size))
+                              //                              >= 0) {
+                              //                                ESP_LOGI(TAG,"opus
+                              //                                packet contains
+                              //                                %d samples, %d
+                              //                                frames, %d
+                              //                                samples per
+                              //                                frame",
+                              //                                sample_count,
+                              //                                frame_count,
+                              //                                samples_per_frame);
+                              //                              }
+                              //                              else {
+                              //                                ESP_LOGE(TAG,"couldn't
+                              //                                get sample count
+                              //                                of packet");
+                              //                              }
+
+                              // TODO: insert some break condition if we wait
+                              // too long
+                              while ((audio = (int16_t *)malloc(
+                                          samples_per_frame * scSet.ch *
+                                          scSet.bits / 8)) == NULL) {
+                                ESP_LOGE(TAG, "couldn't memory for audio");
+
+                                vTaskDelay(pdMS_TO_TICKS(1));
+                              }
+
+                              frame_size = opus_decode(
+                                  opusDecoder, opusData, wire_chnk.size,
+                                  (opus_int16 *)audio, samples_per_frame, 0);
+
+                              free(opusData);
+                              opusData = NULL;
+
+                              // ESP_LOGI(TAG, "time stamp in: %d",
+                              // wire_chunk_message.timestamp.sec);
+                              if (frame_size < 0) {
+                                ESP_LOGE(TAG, "Decode error : %d \n",
+                                         frame_size);
+                              } else {
+                                if (pcmData == NULL) {
+                                  if (allocate_pcm_chunk_memory(
+                                          &pcmData, frame_size * scSet.ch *
+                                                        scSet.bits / 8) < 0) {
+                                    pcmData = NULL;
+                                  } else {
+                                    if (pcmData->fragment->payload) {
+                                      volatile uint32_t *sample;
+
+                                      uint32_t cnt = 0;
+                                      for (int i = 0;
+                                           i < frame_size * scSet.ch *
+                                                   scSet.bits / 8;
+                                           i += 4) {
+                                        sample = (volatile uint32_t *)(&(
+                                            pcmData->fragment->payload[i]));
+                                        tmpData =
+                                            (((uint32_t)audio[cnt] << 16) &
+                                             0xFFFF0000) |
+                                            (((uint32_t)audio[i + 1] << 0) &
+                                             0x0000FFFF);
+                                        *sample = (volatile uint32_t)tmpData;
+
+                                        cnt += 2;
+                                      }
+                                    }
+                                  }
+                                }
+                              }
+
+                              free(audio);
+                              audio = NULL;
+                            }
+
+                            break;
+                          }
+
                           case FLAC: {
 #if TEST_DECODER_TASK
                             pFlacData = NULL;
@@ -1507,6 +1641,69 @@ static void http_get_task(void *pvParameters) {
                       if (typedMsgCurrentPos >= base_message_rx.size) {
                         if (received_header == true) {
                           switch (codec) {
+                            case OPUS: {
+                              //                              size_t decodedSize
+                              //                              = pcm_size;
+
+                              //                              ESP_LOGW(TAG, "got
+                              //                              PCM chunk,
+                              //                              typedMsgCurrentPos
+                              //                              %d",
+                              //                              typedMsgCurrentPos);
+
+                              if (pcmData) {
+                                pcmData->timestamp = wire_chnk.timestamp;
+                              }
+
+                              //                              scSet.chkInFrames
+                              //                              = decodedSize;
+
+                              if (player_send_snapcast_setting(&scSet) !=
+                                  pdPASS) {
+                                ESP_LOGE(TAG,
+                                         "Failed to notify "
+                                         "sync task about "
+                                         "codec. Did you "
+                                         "init player?");
+
+                                return;
+                              }
+#if CONFIG_USE_DSP_PROCESSOR
+                              if (flow_drain_counter > 0) {
+                                flow_drain_counter--;
+                                double dynamic_vol =
+                                    ((double)scSet.volume / 100 /
+                                     (20 - flow_drain_counter));
+                                if (flow_drain_counter == 0) {
+#if SNAPCAST_USE_SOFT_VOL
+                                  dynamic_vol = 0.0;
+#else
+                                  dynamic_vol = 1.0;
+#endif
+                                  audio_hal_set_mute(
+                                      board_handle->audio_hal,
+                                      server_settings_message.muted);
+                                }
+
+                                dsp_processor_set_volome(dynamic_vol);
+                              }
+
+                              if ((pcmData) && (pcmData->fragment->payload)) {
+                                dsp_processor_worker(pcmData->fragment->payload,
+                                                     pcmData->fragment->size,
+                                                     scSet.sr);
+                              }
+#endif
+
+                              if (pcmData) {
+                                insert_pcm_chunk(pcmData);
+                              }
+
+                              pcmData = NULL;
+
+                              break;
+                            }
+
                             case FLAC: {
 #if TEST_DECODER_TASK
                               pFlacData = NULL;  // send NULL so we know to wait
@@ -1935,10 +2132,40 @@ static void http_get_task(void *pvParameters) {
                           flacTaskQHdl = NULL;
                         }
 
-                        if (codec == OPUS) {
-                          ESP_LOGI(TAG, "OPUS not implemented yet");
+                        if (opusDecoder != NULL) {
+                          opus_decoder_destroy(opusDecoder);
+                          opusDecoder = NULL;
+                        }
 
-                          return;
+                        if (codec == OPUS) {
+                          //                          ESP_LOGI(TAG, "OPUS not
+                          //                          implemented yet"); return;
+                          uint16_t channels;
+                          uint32_t rate;
+                          uint16_t bits;
+
+                          memcpy(&rate, tmp + 4, sizeof(rate));
+                          memcpy(&bits, tmp + 8, sizeof(bits));
+                          memcpy(&channels, tmp + 10, sizeof(channels));
+
+                          scSet.codec = codec;
+                          scSet.bits = bits;
+                          scSet.ch = channels;
+                          scSet.sr = rate;
+
+                          ESP_LOGI(TAG, "Opus sample format: %d:%d:%d\n", rate,
+                                   bits, channels);
+
+                          int error = 0;
+                          opusDecoder =
+                              opus_decoder_create(rate, channels, &error);
+                          if (error != 0) {
+                            ESP_LOGI(TAG, "Failed to init opus coder");
+                            return;
+                          }
+
+                          ESP_LOGI(TAG, "Initialized opus Decoder: %d", error);
+
                         } else if (codec == FLAC) {
                           if (t_flac_decoder_task == NULL) {
                             xTaskCreatePinnedToCore(
@@ -2024,10 +2251,12 @@ static void http_get_task(void *pvParameters) {
                                    scSet.bits, scSet.ch);
 #endif
                         } else if (codec == PCM) {
-                          memcpy(&channels, tmp + 22, sizeof(channels));
+                          uint16_t channels;
                           uint32_t rate;
-                          memcpy(&rate, tmp + 24, sizeof(rate));
                           uint16_t bits;
+
+                          memcpy(&channels, tmp + 22, sizeof(channels));
+                          memcpy(&rate, tmp + 24, sizeof(rate));
                           memcpy(&bits, tmp + 34, sizeof(bits));
 
                           scSet.codec = codec;
@@ -2730,7 +2959,7 @@ void app_main(void) {
   xTaskCreatePinnedToCore(&ota_server_task, "ota", 14 * 256, NULL,
                           OTA_TASK_PRIORITY, t_ota_task, OTA_TASK_CORE_ID);
 
-  xTaskCreatePinnedToCore(&http_get_task, "http", 3 * 1024, NULL,
+  xTaskCreatePinnedToCore(&http_get_task, "http", 12 * 1024, NULL,
                           HTTP_TASK_PRIORITY, &t_http_get_task,
                           HTTP_TASK_CORE_ID);
 
