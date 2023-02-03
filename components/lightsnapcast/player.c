@@ -1009,7 +1009,7 @@ int32_t insert_pcm_chunk(pcm_chunk_message_t *pcmChunk) {
   //  }
 
   // if (xQueueSend(pcmChkQHdl, &pcmChunk, pdMS_TO_TICKS(10)) != pdTRUE) {
-  if (xQueueSend(pcmChkQHdl, &pcmChunk, pdMS_TO_TICKS(100)) != pdTRUE) {
+  if (xQueueSend(pcmChkQHdl, &pcmChunk, pdMS_TO_TICKS(1)) != pdTRUE) {
     ESP_LOGW(TAG, "send: pcmChunkQueue full, messages waiting %d",
              uxQueueMessagesWaiting(pcmChkQHdl));
 
@@ -1210,6 +1210,10 @@ static void player_task(void *pvParameters) {
                              (int64_t)chnk->timestamp.usec;
 
         age = serverNow - chunkStart - buf_us + clientDacLatency_us;
+
+        //        ESP_LOGE(TAG,"age: %lld, serverNow %lld, chunkStart %lld,
+        //        buf_us %lld", age, serverNow, chunkStart, buf_us);
+
         if (initialSync == 1) {
           // on initialSync == 0 (hard sync) we don't have any data in i2s DMA
           // buffer so in that case we don't need to add this
@@ -1413,8 +1417,8 @@ static void player_task(void *pvParameters) {
 
         // resync hard if we are getting very late / early.
         // rest gets tuned in through apll speed control
-        if ((msgWaiting == 0) || ((abs(avg) > hardResyncThreshold) &&
-                                  MEDIANFILTER_isFull(&shortMedianFilter)))
+        if ((msgWaiting == 0) || (MEDIANFILTER_isFull(&shortMedianFilter) &&
+                                  (abs(avg) > hardResyncThreshold)))
         //        if (msgWaiting == 0)
         {
           if (chnk != NULL) {
@@ -1431,7 +1435,7 @@ static void player_task(void *pvParameters) {
                    "%d, largest block %d, %d, rssi: %d",
                    avg, diff2Server, heap_caps_get_free_size(MALLOC_CAP_32BIT),
                    heap_caps_get_largest_free_block(MALLOC_CAP_32BIT),
-                   uxQueueMessagesWaiting(pcmChkQHdl), ap.rssi);
+                   msgWaiting, ap.rssi);
 
           //          // get count of chunks we are late for
           //          uint32_t c = ceil((float)age / (float)chkDur_us);  //
@@ -1501,12 +1505,15 @@ static void player_task(void *pvParameters) {
 
           //          xSemaphoreTake(playerPcmQueueMux, portMAX_DELAY);
 
-          //           ESP_LOGI (TAG, "%d, %lldus, %lldus %llds, %lld.%lldms",
-          //           dir, age, avg, sec, msec, usec);
+          //          ESP_LOGI (TAG, "%d, %lldus, q %d",
+          //          dir, avg, uxQueueMessagesWaiting(pcmChkQHdl));
 
-          //            ESP_LOGI(TAG, "%d, %lldus, %lldus, %lldus, q:%d", dir,
-          //            avg, shortMedian, miniMedian,
-          //            uxQueueMessagesWaiting(pcmChkQHdl));
+          //                     ESP_LOGI (TAG, "%d, %lldus, %lldus %llds,
+          //                     %lld.%lldms", dir, age, avg, sec, msec, usec);
+
+          //          ESP_LOGI(TAG, "%d, %lldus, %lldus, %lldus, q:%d", dir,
+          //          avg, shortMedian, miniMedian,
+          //          uxQueueMessagesWaiting(pcmChkQHdl));
 
           //           ESP_LOGI( TAG, "8b f
           //           %d b %d", heap_caps_get_free_size(MALLOC_CAP_8BIT |
