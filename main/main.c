@@ -696,7 +696,7 @@ void opus_decoder_task(void *pvParameters) {
                 sample =
                     (volatile uint32_t *)(&(pcmData->fragment->payload[i]));
                 tmpData = (((uint32_t)audio[cnt] << 16) & 0xFFFF0000) |
-                          (((uint32_t)audio[i + 1] << 0) & 0x0000FFFF);
+                          (((uint32_t)audio[cnt + 1] << 0) & 0x0000FFFF);
                 *sample = (volatile uint32_t)tmpData;
 
                 cnt += 2;
