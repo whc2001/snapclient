@@ -118,6 +118,8 @@ Configure to match your setup
   - Wifi network name and password
   - Audio codec/board setup
 
+Use [docker](doc/docker_build.md) or local IDF installation
+
     idf.py menuconfig
 
 Build, compile and flash:
