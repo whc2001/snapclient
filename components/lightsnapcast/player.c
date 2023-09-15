@@ -1418,7 +1418,7 @@ static void player_task(void *pvParameters) {
         // resync hard if we are getting very late / early.
         // rest gets tuned in through apll speed control
         if ((msgWaiting == 0) || (MEDIANFILTER_isFull(&shortMedianFilter) &&
-                                  (abs(avg) > hardResyncThreshold)))
+                                  (abs(shortMedian) > hardResyncThreshold)))
         //        if (msgWaiting == 0)
         {
           if (chnk != NULL) {
@@ -1505,8 +1505,7 @@ static void player_task(void *pvParameters) {
 
           //          xSemaphoreTake(playerPcmQueueMux, portMAX_DELAY);
 
-          //          ESP_LOGI (TAG, "%d, %lldus, q %d",
-          //          dir, avg, uxQueueMessagesWaiting(pcmChkQHdl));
+          //ESP_LOGI (TAG, "%d, %lldus, q %d", dir, avg, uxQueueMessagesWaiting(pcmChkQHdl));
 
           //                     ESP_LOGI (TAG, "%d, %lldus, %lldus %llds,
           //                     %lld.%lldms", dir, age, avg, sec, msec, usec);
