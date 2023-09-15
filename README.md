@@ -27,7 +27,7 @@ samples and therefore no precise sync could be achieved.
 
 ### Codebase
 
-The codebase is split into components and build on <b>ESP-IDF v4.3.1</b>. I still
+The codebase is split into components and build on <b>ESP-IDF v4.3.5</b>. I still
 have some refactoring on the todo list as the concept has started to settle and
 allow for new features can be added in a structured manner. In the code you
 will find parts that are only partly related features and still not on the task
@@ -181,6 +181,10 @@ Then on every `git commit`, a few sanity/formatting checks will be performed.
 - [ ] dsp_processor: add equalizer
  * Control interface for equalizer
 - [ ] clean and polish code (remove all unused variables etc.)
+- [ ] Improve Documentation, e.g. Hardware guide (supported codecs)
+- [ ] upgrade to IDF v5
+- [ ] in IDF v5 use native i2s driver, as it supports preloading DMA buffer with valid data now
+- [ ] Throw out ADF copied components from project tree and use CmakeLists.txt to pull in necessary files from ADF
 
 ## Minor task
   - [ok] soft mute - play sample in buffer with decreasing volume

@@ -37,11 +37,11 @@ Write `build/firmware.bin` to ESP32 at address 0x0000
 --------------------
 ### More details
 ```
-docker run 
+docker run
     --rm                            // Removes container after exit
     -it                             // runs interactive terminal
     -v .:/project                   // maps current directory to /project in container
     -w /project                     // sets working directory inside a container to /project
-    espressif/idf:v4.3.1            // image name + version
+    espressif/idf:v4.3.5            // image name + version
     idf.py menuconfig               // run menuconfig
 ```
