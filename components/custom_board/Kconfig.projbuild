@@ -27,17 +27,20 @@ menu "Custom Audio Board"
 	menu "DAC I2C control interface"
     	config DAC_I2C_SDA
         	int "SDA pin"
-        	default 21
+        	default 12 if DAC_ADAU1961
+        	default 21 if DAC_MA120 || DAC_PCM51XX || DAC_MA120 || DAC_MA120X0
         	help
         	    I2C SDA pin of the DAC control interface
     	config DAC_I2C_SCL
         	int "SCL pin"
-        	default 22
+        	default 14 if DAC_ADAU1961
+        	default 22 if DAC_MA120 || DAC_PCM51XX || DAC_MA120 || DAC_MA120X0
         	help
         	    I2C SCL pin of the DAC control interface
     	config DAC_I2C_ADDR
         	hex "I2C address"
-        	default 0x20
+        	default 0x70 if DAC_ADAU1961
+        	default 0x20 if DAC_MA120 || DAC_PCM51XX || DAC_MA120 || DAC_MA120X0
         	help
         	    I2C Address of the DAC control interface
     endmenu

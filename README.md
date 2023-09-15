@@ -3,17 +3,18 @@
 ### Synchronous Multiroom audio streaming client for [Snapcast](https://github.com/badaix/snapcast) ported to ESP32
 
 ## Feature list
-- FLAC decoding currently supported
+- FLAC, OPUS and PCM decoding currently supported
 - Wifi setup from menuconfig or through espressif Android App "SoftAP Prov"
 - Auto connect to snapcast server on network
-- Buffers up to 1000ms on Wroom modules (tested with 44100:16:2)
+- Buffers up to 758ms on Wroom modules (tested with 44100:16:2)
 - Buffers more then enough on Wrover modules
 - Multiroom sync delay controlled from Snapcast server (user has to ensure not to set this too high on the server)
+- DSP / EQ functionality configurable through menuconfig and partly controllable through HTTP server running on ESP client (work in progress)
 
 ## Description
 I have continued the work from @badaix, @bridadan and @jorgenkraghjakobsen towards a ESP32 Snapcast
 client. Currently it support basic features like multiroom sync, network
-controlled volume and mute. For now it only support FLAC 16bit
+controlled volume and mute. For now it supports FLAC, OPUS, PCM 16bit
 audio streams with sample rates up to 48Khz maybe more, I didn't test.
 
 Please check out the task list and feel free to fill in.
@@ -26,7 +27,7 @@ samples and therefore no precise sync could be achieved.
 
 ### Codebase
 
-The codebase is split into components and build on ESP-IDF v4.3.1. I still
+The codebase is split into components and build on <b>ESP-IDF v4.3.1</b>. I still
 have some refactoring on the todo list as the concept has started to settle and
 allow for new features can be added in a structured manner. In the code you
 will find parts that are only partly related features and still not on the task
