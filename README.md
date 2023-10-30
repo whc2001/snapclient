@@ -222,7 +222,7 @@ Then on every `git commit`, a few sanity/formatting checks will be performed.
 - [ ] dsp_processor: add equalizer
  * Control interface for equalizer
 - [ ] clean and polish code (remove all unused variables etc.)
-- [ ] Improve Documentation, e.g. Hardware guide (supported codecs)
+- [ok] Improve Documentation, e.g. Hardware guide (supported codecs)
 - [ ] upgrade to IDF v5
 - [ ] in IDF v5 use native i2s driver, as it supports preloading DMA buffer with valid data now
 - [ ] Throw out ADF copied components from project tree and use CmakeLists.txt to pull in necessary files from ADF
