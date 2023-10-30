@@ -214,7 +214,7 @@ Then on every `git commit`, a few sanity/formatting checks will be performed.
 - [ok] Integrate ESP wifi provision
 - [ok] Find and connect to Avahi broadcasted Snapcast server name
 - [ ] Add a client command interface layer like volume/mute control
-- [ ] add missing codec's (ogg, pcm, opus)
+- [ ] add missing codec's (ogg)
 - [ok] test esp-dsp functionality after ADF drop
 - [ok] Check compatibility with different HW than Lyrat v4.3
 - [ok] rework dsp_processor and test. At the moment only dspfStereo and dspfBassBoost will work. Also ensure/test we got enough RAM on WROVER modules
