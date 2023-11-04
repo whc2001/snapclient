@@ -139,14 +139,15 @@ Configure to match your setup
     - ESP32-S2 Kaluga (1.2)
     - Or a custom board
   - <b>Custom Audio Board :</b> Configure your DAC and GPIO
-    - DAC Chip : 
+    - DAC Chip :
       - TI PCM51XX/TAS57XX DAC (PCM51XX are stereo DAC in TSSOP package and TAS57XX are class-D amp in HTSSOP package. Both have i2s input and i2c control)
-      - TI PCM5102A DAC (Very basic stereo DAC WITHOUT i2c control. Use this option if you only want i2s out like for a MAX98357)
+      - TI PCM5102A DAC (Very basic stereo DAC WITHOUT i2c control)
       - Infineon MA120X0 (High power class-D amp in QFN package)
       - Analog Devices ADAU1961 (Stereo DAC with multiple analog inputs in LFCSP package)
+      - Analog Devices MAX98357 (Very popular basic mono AMP without i2c control)
     - DAC I2C control interface : Choose GPIO pin of your I2C line and address of the DAC. If your DAC doesn't support I2C (PCM5102A or equivalent), put unused GPIO values.
     - I2C master interface : GPIO pin of your DAC I2S bus.
-    - DAC interface configuration : Configure specific GPIO for your DAC functionnalities. If you use a MAX98357 with PCM5102A config, don't connect the SD pin to master mute. (PCM5102A logic is inverted)
+    - DAC interface configuration : Configure specific GPIO for your DAC functionnalities. Use `?` to have more info.
   - <b>ESP32 DSP processor config :</b>
     - DSP flow : Choose between Stereo, Bassboost, Bi-amp or Bass/Treble EQ. You can further configure it on the ESP web interface/
     - Use asm version of Biquad_f32 : Optimized version of the DSP algorithm only for ESP32. Don't work on ESP32-S2
