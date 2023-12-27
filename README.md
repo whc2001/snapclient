@@ -133,10 +133,10 @@ idf.py menuconfig
 Configure to match your setup
   - <b>Audio HAL :</b> Choose your audio board
     - Lyrat (4.3, 4.2)
-    - Lyrat TD (2.2, 2.1)
+    - Lyrat TD (2.2, 2.1) --> not supported yet
     - Lyrat Mini (1.1)
-    - KORVO DU1906
-    - ESP32-S2 Kaluga (1.2)
+    - KORVO DU1906	--> not supported yet
+    - ESP32-S2 Kaluga (1.2)	--> not supported yet
     - Or a custom board
   - <b>Custom Audio Board :</b> Configure your DAC and GPIO
     - DAC Chip :
