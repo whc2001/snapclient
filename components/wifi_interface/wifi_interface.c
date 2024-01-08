@@ -5,14 +5,16 @@
     Must be taken over/merge with wifi provision
 */
 
-//#include "esp_event.h"
+// #include "esp_event.h"
+#include "wifi_interface.h"
+
+#include "esp_event.h"
 #include "esp_log.h"
+#include "esp_mac.h"
 #include "esp_wifi.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/event_groups.h"
 #include "freertos/task.h"
-
-#include "wifi_interface.h"
 
 #if ENABLE_WIFI_PROVISIONING
 #include <string.h>  // for memcpy
@@ -129,10 +131,11 @@ void wifi_init(void) {
 
   ESP_ERROR_CHECK(esp_event_loop_create_default());
 
-  ESP_ERROR_CHECK(esp_event_handler_register(WIFI_EVENT, ESP_EVENT_ANY_ID,
-                                             &event_handler, NULL));
-  ESP_ERROR_CHECK(esp_event_handler_register(IP_EVENT, IP_EVENT_STA_GOT_IP,
-                                             &event_handler, NULL));
+  ESP_ERROR_CHECK(esp_event_handler_register(
+      WIFI_EVENT, ESP_EVENT_ANY_ID, (esp_event_handler_t)&event_handler, NULL));
+  ESP_ERROR_CHECK(
+      esp_event_handler_register(IP_EVENT, IP_EVENT_STA_GOT_IP,
+                                 (esp_event_handler_t)&event_handler, NULL));
 #if ENABLE_WIFI_PROVISIONING
   ESP_ERROR_CHECK(esp_event_handler_register(WIFI_PROV_EVENT, ESP_EVENT_ANY_ID,
                                              &event_handler, NULL));

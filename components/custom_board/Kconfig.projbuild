@@ -78,6 +78,12 @@ menu "Custom Audio Board"
     endmenu
 
 	menu "I2S slave interface"
+       	config SLAVE_I2S_MCLK_PIN
+            int "Slave i2s mclk"
+            default 0
+            help
+                Slave audio interface master clock.
+
         config SLAVE_I2S_BCK_PIN
             int "Slave i2s bck"
             default 26
@@ -112,13 +118,13 @@ menu "Custom Audio Board"
              help
                  GPIO number to controm mute/unmute.
 
-         config MERUS_NERR_PIN
+         config MA120X0_NERR_PIN
              int "NERR monitor pin"
              default 21
              help
                  GPIO number to monitor NERROR.
 
-         config MERUS_NCLIP_PIN
+         config MA120X0_NCLIP_PIN
              int "Clip indication pin"
              default 22
              help

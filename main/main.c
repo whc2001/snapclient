@@ -10,7 +10,9 @@
 
 #include "esp_event.h"
 #include "esp_log.h"
+#include "esp_mac.h"
 #include "esp_system.h"
+#include "esp_timer.h"
 #include "esp_wifi.h"
 #if CONFIG_SNAPCLIENT_ENABLE_ETHERNET
 #include "eth_interface.h"
@@ -35,12 +37,12 @@
 #include "net_functions.h"
 
 // Web socket server
-#include "websocket_if.h"
-//#include "websocket_server.h"
+// #include "websocket_if.h"
+// #include "websocket_server.h"
 
 #include <sys/time.h>
 
-#include "driver/i2s.h"
+#include "driver/i2s_std.h"
 #if CONFIG_USE_DSP_PROCESSOR
 #include "dsp_processor.h"
 #endif
@@ -53,7 +55,6 @@
 #include "ota_server.h"
 #include "player.h"
 #include "snapcast.h"
-
 #include "ui_http_server.h"
 
 static FLAC__StreamDecoderReadStatus read_callback(
@@ -69,7 +70,7 @@ static void error_callback(const FLAC__StreamDecoder *decoder,
                            FLAC__StreamDecoderErrorStatus status,
                            void *client_data);
 
-//#include "ma120.h"
+// #include "ma120.h"
 
 static FLAC__StreamDecoder *flacDecoder = NULL;
 static QueueHandle_t decoderReadQHdl = NULL;
@@ -99,10 +100,10 @@ const char *VERSION_STRING = "0.0.2";
 
 // 1  // tskNO_AFFINITY
 
-xTaskHandle t_ota_task = NULL;
-xTaskHandle t_http_get_task = NULL;
-xTaskHandle t_flac_decoder_task = NULL;
-xTaskHandle dec_task_handle = NULL;
+TaskHandle_t t_ota_task = NULL;
+TaskHandle_t t_http_get_task = NULL;
+TaskHandle_t t_flac_decoder_task = NULL;
+TaskHandle_t dec_task_handle = NULL;
 
 #define FAST_SYNC_LATENCY_BUF 10000      // in µs
 #define NORMAL_SYNC_LATENCY_BUF 1000000  // in µs
@@ -156,7 +157,8 @@ static char time_message_serialized[TIME_MESSAGE_SIZE];
 static const esp_timer_create_args_t tSyncArgs = {
     .callback = &time_sync_msg_cb,
     .dispatch_method = ESP_TIMER_TASK,
-    .name = "tSyncMsg"};
+    .name = "tSyncMsg",
+    .skip_unhandled_events = false};
 
 struct netconn *lwipNetconn;
 
@@ -336,14 +338,14 @@ static FLAC__StreamDecoderWriteStatus write_callback(
 
   if (frame->header.channels != scSet->ch) {
     ESP_LOGE(TAG,
-             "ERROR: frame header reports different channel count %d than "
+             "ERROR: frame header reports different channel count %ld than "
              "previous metadata block %d",
              frame->header.channels, scSet->ch);
     return FLAC__STREAM_DECODER_WRITE_STATUS_ABORT;
   }
   if (frame->header.bits_per_sample != scSet->bits) {
     ESP_LOGE(TAG,
-             "ERROR: frame header reports different bps %d than previous "
+             "ERROR: frame header reports different bps %ld than previous "
              "metadata block %d",
              frame->header.bits_per_sample, scSet->bits);
     return FLAC__STREAM_DECODER_WRITE_STATUS_ABORT;
@@ -396,7 +398,7 @@ static FLAC__StreamDecoderWriteStatus write_callback(
         if (fragment != NULL) {
           volatile uint32_t *test =
               (volatile uint32_t *)(&(fragment->payload[fragmentCnt]));
-          *test = (volatile uint32_t *)tmpData;
+          *test = (volatile uint32_t)tmpData;
         }
 
         fragmentCnt += 4;
@@ -451,7 +453,7 @@ void metadata_callback(const FLAC__StreamDecoder *decoder,
     scSet->ch = metadata->data.stream_info.channels;
     scSet->bits = metadata->data.stream_info.bits_per_sample;
 
-    ESP_LOGI(TAG, "fLaC sampleformat: %d:%d:%d", scSet->sr, scSet->bits,
+    ESP_LOGI(TAG, "fLaC sampleformat: %ld:%d:%d", scSet->sr, scSet->bits,
              scSet->ch);
 
     xQueueSend(decoderWriteQHdl, &flacData, portMAX_DELAY);
@@ -636,7 +638,7 @@ void opus_decoder_task(void *pvParameters) {
         size_t bytes = samples_per_frame * scSet->ch * scSet->bits / 8;
 
         if (samples_per_frame > 480) {
-          ESP_LOGE(TAG, "samples_per_frame: %d, pOpusData->bytes %d, bytes %d",
+          ESP_LOGE(TAG, "samples_per_frame: %d, pOpusData->bytes %ld, bytes %u",
                    samples_per_frame, pOpusData->bytes, bytes);
         }
 
@@ -977,7 +979,7 @@ static void http_get_task(void *pvParameters) {
     scSet.muted = true;
 
     uint64_t startTime, endTime;
-    char *tmp;
+    char *p_tmp = NULL;
     int32_t remainderSize = 0;
     size_t currentPos = 0;
     size_t typedMsgCurrentPos = 0;
@@ -1381,12 +1383,12 @@ static void http_get_task(void *pvParameters) {
                     }
 
                     case 12: {
-                      size_t tmp;
+                      size_t tmp_size;
 
                       if ((base_message_rx.size - typedMsgCurrentPos) <= len) {
-                        tmp = base_message_rx.size - typedMsgCurrentPos;
+                        tmp_size = base_message_rx.size - typedMsgCurrentPos;
                       } else {
-                        tmp = len;
+                        tmp_size = len;
                       }
 
                       //                      static double lastChunkTimestamp =
@@ -1418,8 +1420,8 @@ static void http_get_task(void *pvParameters) {
                               payloadOffset = 0;
                             }
 
-                            memcpy(&opusData[payloadOffset], start, tmp);
-                            payloadOffset += tmp;
+                            memcpy(&opusData[payloadOffset], start, tmp_size);
+                            payloadOffset += tmp_size;
 
                             //                            ESP_LOGE(TAG,"payloadOffset
                             //                            %d, wire_chnk.size
@@ -1467,7 +1469,7 @@ static void http_get_task(void *pvParameters) {
                               }
                             }
 
-                            pDecData->bytes = tmp;
+                            pDecData->bytes = tmp_size;
 
                             // store timestamp for
                             // later use
@@ -1485,7 +1487,7 @@ static void http_get_task(void *pvParameters) {
                             }
 
                             if (pDecData->inData) {
-                              memcpy(pDecData->inData, start, tmp);
+                              memcpy(pDecData->inData, start, tmp_size);
                               pDecData->outData = NULL;
                               pDecData->type = SNAPCAST_MESSAGE_WIRE_CHUNK;
 
@@ -1495,7 +1497,7 @@ static void http_get_task(void *pvParameters) {
                                          portMAX_DELAY);
                             }
 #else
-                            flacData.bytes = tmp;
+                            flacData.bytes = tmp_size;
                             flacData.timestamp =
                                 wire_chnk.timestamp;  // store timestamp for
                                                       // later use
@@ -1537,7 +1539,7 @@ static void http_get_task(void *pvParameters) {
                           }
 
                           case PCM: {
-                            size_t _tmp = tmp;
+                            size_t _tmp = tmp_size;
 
                             offset = 0;
 
@@ -1607,10 +1609,10 @@ static void http_get_task(void *pvParameters) {
                         }
                       }
 
-                      typedMsgCurrentPos += tmp;
-                      start += tmp;
-                      currentPos += tmp;
-                      len -= tmp;
+                      typedMsgCurrentPos += tmp_size;
+                      start += tmp_size;
+                      currentPos += tmp_size;
+                      len -= tmp_size;
 
                       if (typedMsgCurrentPos >= base_message_rx.size) {
                         if (received_header == true) {
@@ -1810,9 +1812,9 @@ static void http_get_task(void *pvParameters) {
                     case 3: {
                       typedMsgLen |= (*start & 0xFF) << 24;
 
-                      tmp = malloc(typedMsgLen + 1);  // allocate memory for
-                                                      // codec string
-                      if (tmp == NULL) {
+                      p_tmp = malloc(typedMsgLen + 1);  // allocate memory for
+                                                        // codec string
+                      if (p_tmp == NULL) {
                         ESP_LOGE(TAG,
                                  "couldn't get memory "
                                  "for codec string");
@@ -1837,7 +1839,7 @@ static void http_get_task(void *pvParameters) {
 
                     case 4: {
                       if (len >= typedMsgLen) {
-                        memcpy(&tmp[offset], start, typedMsgLen);
+                        memcpy(&p_tmp[offset], start, typedMsgLen);
 
                         offset += typedMsgLen;
 
@@ -1846,7 +1848,7 @@ static void http_get_task(void *pvParameters) {
                         currentPos += typedMsgLen;
                         len -= typedMsgLen;
                       } else {
-                        memcpy(&tmp[offset], start, typedMsgLen);
+                        memcpy(&p_tmp[offset], start, typedMsgLen);
 
                         offset += len;
 
@@ -1858,20 +1860,20 @@ static void http_get_task(void *pvParameters) {
 
                       if (offset == typedMsgLen) {
                         // NULL terminate string
-                        tmp[typedMsgLen] = 0;
+                        p_tmp[typedMsgLen] = 0;
 
                         // ESP_LOGI (TAG, "got codec string: %s", tmp);
 
-                        if (strcmp(tmp, "opus") == 0) {
+                        if (strcmp(p_tmp, "opus") == 0) {
                           codec = OPUS;
-                        } else if (strcmp(tmp, "flac") == 0) {
+                        } else if (strcmp(p_tmp, "flac") == 0) {
                           codec = FLAC;
-                        } else if (strcmp(tmp, "pcm") == 0) {
+                        } else if (strcmp(p_tmp, "pcm") == 0) {
                           codec = PCM;
                         } else {
                           codec = NONE;
 
-                          ESP_LOGI(TAG, "Codec : %s not supported", tmp);
+                          ESP_LOGI(TAG, "Codec : %s not supported", p_tmp);
                           ESP_LOGI(TAG,
                                    "Change encoder codec to "
                                    "opus, flac or pcm in "
@@ -1881,8 +1883,8 @@ static void http_get_task(void *pvParameters) {
                           return;
                         }
 
-                        free(tmp);
-                        tmp = NULL;
+                        free(p_tmp);
+                        p_tmp = NULL;
 
                         internalState++;
                       }
@@ -1932,9 +1934,9 @@ static void http_get_task(void *pvParameters) {
                     case 8: {
                       typedMsgLen |= (*start & 0xFF) << 24;
 
-                      tmp = malloc(typedMsgLen);  // allocate memory for
-                                                  // codec string
-                      if (tmp == NULL) {
+                      p_tmp = malloc(typedMsgLen);  // allocate memory for
+                                                    // codec string
+                      if (p_tmp == NULL) {
                         ESP_LOGE(TAG,
                                  "couldn't get memory "
                                  "for codec string");
@@ -1956,7 +1958,7 @@ static void http_get_task(void *pvParameters) {
 
                     case 9: {
                       if (len >= typedMsgLen) {
-                        memcpy(&tmp[offset], start, typedMsgLen);
+                        memcpy(&p_tmp[offset], start, typedMsgLen);
 
                         offset += typedMsgLen;
 
@@ -1965,7 +1967,7 @@ static void http_get_task(void *pvParameters) {
                         currentPos += typedMsgLen;
                         len -= typedMsgLen;
                       } else {
-                        memcpy(&tmp[offset], start, typedMsgLen);
+                        memcpy(&p_tmp[offset], start, typedMsgLen);
 
                         offset += len;
 
@@ -2029,16 +2031,16 @@ static void http_get_task(void *pvParameters) {
                           uint32_t rate;
                           uint16_t bits;
 
-                          memcpy(&rate, tmp + 4, sizeof(rate));
-                          memcpy(&bits, tmp + 8, sizeof(bits));
-                          memcpy(&channels, tmp + 10, sizeof(channels));
+                          memcpy(&rate, p_tmp + 4, sizeof(rate));
+                          memcpy(&bits, p_tmp + 8, sizeof(bits));
+                          memcpy(&channels, p_tmp + 10, sizeof(channels));
 
                           scSet.codec = codec;
                           scSet.bits = bits;
                           scSet.ch = channels;
                           scSet.sr = rate;
 
-                          ESP_LOGI(TAG, "Opus sample format: %d:%d:%d\n", rate,
+                          ESP_LOGI(TAG, "Opus sample format: %ld:%d:%d\n", rate,
                                    bits, channels);
 
                           int error = 0;
@@ -2102,7 +2104,7 @@ static void http_get_task(void *pvParameters) {
 
                           pDecData->bytes = typedMsgLen;
                           pDecData->inData = (uint8_t *)malloc(typedMsgLen);
-                          memcpy(pDecData->inData, tmp, typedMsgLen);
+                          memcpy(pDecData->inData, p_tmp, typedMsgLen);
                           pDecData->outData = NULL;
                           pDecData->type = SNAPCAST_MESSAGE_CODEC_HEADER;
 
@@ -2130,7 +2132,7 @@ static void http_get_task(void *pvParameters) {
                           }
 
                           flacData.bytes = typedMsgLen;
-                          flacData.inData = tmp;
+                          flacData.inData = p_tmp;
                           pDecData = &flacData;
 
                           // TODO: find a smarter way for
@@ -2161,16 +2163,16 @@ static void http_get_task(void *pvParameters) {
                           uint32_t rate;
                           uint16_t bits;
 
-                          memcpy(&channels, tmp + 22, sizeof(channels));
-                          memcpy(&rate, tmp + 24, sizeof(rate));
-                          memcpy(&bits, tmp + 34, sizeof(bits));
+                          memcpy(&channels, p_tmp + 22, sizeof(channels));
+                          memcpy(&rate, p_tmp + 24, sizeof(rate));
+                          memcpy(&bits, p_tmp + 34, sizeof(bits));
 
                           scSet.codec = codec;
                           scSet.bits = bits;
                           scSet.ch = channels;
                           scSet.sr = rate;
 
-                          ESP_LOGI(TAG, "pcm sampleformat: %d:%d:%d", scSet.sr,
+                          ESP_LOGI(TAG, "pcm sampleformat: %ld:%d:%d", scSet.sr,
                                    scSet.bits, scSet.ch);
                         } else {
                           ESP_LOGE(TAG,
@@ -2181,8 +2183,8 @@ static void http_get_task(void *pvParameters) {
                           return;
                         }
 
-                        free(tmp);
-                        tmp = NULL;
+                        free(p_tmp);
+                        p_tmp = NULL;
 
                         // ESP_LOGI(TAG, "done codec header msg");
 
@@ -2308,23 +2310,23 @@ static void http_get_task(void *pvParameters) {
                       // string at this point there is still
                       // plenty of RAM available, so we use
                       // malloc and netbuf_copy() here
-                      tmp = malloc(typedMsgLen + 1);
+                      p_tmp = malloc(typedMsgLen + 1);
 
-                      if (tmp == NULL) {
+                      if (p_tmp == NULL) {
                         ESP_LOGE(TAG,
                                  "couldn't get memory for "
                                  "server settings string");
                       } else {
-                        netbuf_copy_partial(firstNetBuf, tmp, typedMsgLen,
+                        netbuf_copy_partial(firstNetBuf, p_tmp, typedMsgLen,
                                             currentPos);
 
-                        tmp[typedMsgLen] = 0;  // NULL terminate string
+                        p_tmp[typedMsgLen] = 0;  // NULL terminate string
 
                         // ESP_LOGI
                         //(TAG, "got string: %s", tmp);
 
                         result = server_settings_message_deserialize(
-                            &server_settings_message, tmp);
+                            &server_settings_message, p_tmp);
                         if (result) {
                           ESP_LOGE(TAG,
                                    "Failed to read server "
@@ -2332,13 +2334,13 @@ static void http_get_task(void *pvParameters) {
                                    result);
                         } else {
                           // log mute state, buffer, latency
-                          ESP_LOGI(TAG, "Buffer length:  %d",
+                          ESP_LOGI(TAG, "Buffer length:  %ld",
                                    server_settings_message.buffer_ms);
-                          ESP_LOGI(TAG, "Latency:        %d",
+                          ESP_LOGI(TAG, "Latency:        %ld",
                                    server_settings_message.latency);
                           ESP_LOGI(TAG, "Mute:           %d",
                                    server_settings_message.muted);
-                          ESP_LOGI(TAG, "Setting volume: %d",
+                          ESP_LOGI(TAG, "Setting volume: %ld",
                                    server_settings_message.volume);
                         }
 
@@ -2346,24 +2348,23 @@ static void http_get_task(void *pvParameters) {
                         // abstraction
                         if (scSet.muted != server_settings_message.muted) {
 #if SNAPCAST_USE_SOFT_VOL
-                            if (server_settings_message.muted) {
-                                dsp_processor_set_volome(0.0);
-                            }
-                            else {
-                                dsp_processor_set_volome(
-                                    (double)server_settings_message.volume / 100);
-                            }
+                          if (server_settings_message.muted) {
+                            dsp_processor_set_volome(0.0);
+                          } else {
+                            dsp_processor_set_volome(
+                                (double)server_settings_message.volume / 100);
+                          }
 #endif
                           audio_hal_set_mute(board_handle->audio_hal,
                                              server_settings_message.muted);
                         }
-                                             
+
                         if (scSet.volume != server_settings_message.volume) {
 #if SNAPCAST_USE_SOFT_VOL
-                            if (!server_settings_message.muted) {
-                                dsp_processor_set_volome(
+                          if (!server_settings_message.muted) {
+                            dsp_processor_set_volome(
                                 (double)server_settings_message.volume / 100);
-                            }
+                          }
 #else
                           audio_hal_set_volume(board_handle->audio_hal,
                                                server_settings_message.volume);
@@ -2383,8 +2384,8 @@ static void http_get_task(void *pvParameters) {
                           return;
                         }
 
-                        free(tmp);
-                        tmp = NULL;
+                        free(p_tmp);
+                        p_tmp = NULL;
                       }
 
                       internalState++;
@@ -2640,9 +2641,8 @@ static void http_get_task(void *pvParameters) {
 
                             esp_timer_start_periodic(timeSyncMessageTimer,
                                                      timeout);
-                          }
-                          else if ((is_full == false) &&
-                              (timeout > FAST_SYNC_LATENCY_BUF)){
+                          } else if ((is_full == false) &&
+                                     (timeout > FAST_SYNC_LATENCY_BUF)) {
                             timeout = FAST_SYNC_LATENCY_BUF;
 
                             ESP_LOGI(TAG, "latency buffer not full");
@@ -2658,7 +2658,7 @@ static void http_get_task(void *pvParameters) {
                       } else {
                         ESP_LOGE(TAG,
                                  "error time message, this "
-                                 "shouldn't happen! %d %d",
+                                 "shouldn't happen! %d %ld",
                                  typedMsgCurrentPos, base_message_rx.size);
 
                         typedMsgCurrentPos = 0;
@@ -2673,7 +2673,7 @@ static void http_get_task(void *pvParameters) {
                     default: {
                       ESP_LOGE(TAG,
                                "time message decoder shouldn't "
-                               "get here %d %d %d",
+                               "get here %d %ld %ld",
                                typedMsgCurrentPos, base_message_rx.size,
                                internalState);
 
@@ -2707,7 +2707,9 @@ static void http_get_task(void *pvParameters) {
               break;
             }
 
-            default: { break; }
+            default: {
+              break;
+            }
           }
 
           if (rc1 != ERR_OK) {
@@ -2747,6 +2749,8 @@ void app_main(void) {
   // if enabled these cause a timer srv stack overflow
   esp_log_level_set("HEADPHONE", ESP_LOG_NONE);
   esp_log_level_set("gpio", ESP_LOG_NONE);
+  esp_log_level_set("i2s_std", ESP_LOG_DEBUG);
+  esp_log_level_set("i2s_common", ESP_LOG_DEBUG);
 
 #if CONFIG_SNAPCLIENT_ENABLE_ETHERNET
   // clang-format off
@@ -2776,27 +2780,49 @@ void app_main(void) {
 
 #if CONFIG_AUDIO_BOARD_CUSTOM
   // some codecs need i2s mclk for initialization
-  i2s_config_t i2s_config0 = {
-      .mode = I2S_MODE_MASTER | I2S_MODE_TX,  // Only TX
-      .sample_rate = 44100,
-      .bits_per_sample = 16,
-      .channel_format = I2S_CHANNEL_FMT_RIGHT_LEFT,  // 2-channels
-      .communication_format = I2S_COMM_FORMAT_STAND_I2S,
-      .dma_buf_count = 2,
-      .dma_buf_len = 128,
-      .intr_alloc_flags = 1,  // Default interrupt priority
-      .use_apll = true,
-      .fixed_mclk = 0,
-      .tx_desc_auto_clear = true  // Auto clear tx descriptor on underflow
+
+  i2s_chan_handle_t tx_chan;
+
+  i2s_chan_config_t tx_chan_cfg = {
+      .id = I2S_NUM_0,
+      .role = I2S_ROLE_MASTER,
+      .dma_desc_num = 2,
+      .dma_frame_num = 128,
+      .auto_clear = true,
   };
-  i2s_pin_config_t pin_config0;
+  ESP_ERROR_CHECK(i2s_new_channel(&tx_chan_cfg, &tx_chan, NULL));
+
+  board_i2s_pin_t pin_config0;
   get_i2s_pins(I2S_NUM_0, &pin_config0);
 
-  i2s_custom_driver_uninstall(I2S_NUM_0);
-  i2s_custom_driver_install(I2S_NUM_0, &i2s_config0, 0, NULL);
-  i2s_custom_set_pin(I2S_NUM_0, &pin_config0);
-
-  i2s_mclk_gpio_select(I2S_NUM_0, CONFIG_MASTER_I2S_MCLK_PIN);
+  i2s_std_clk_config_t i2s_clkcfg = {
+      .sample_rate_hz = 44100,
+      .clk_src = I2S_CLK_SRC_APLL,
+      .mclk_multiple = I2S_MCLK_MULTIPLE_256,
+  };
+  i2s_std_config_t tx_std_cfg = {
+      .clk_cfg = i2s_clkcfg,
+      .slot_cfg = I2S_STD_PHILIPS_SLOT_DEFAULT_CONFIG(I2S_DATA_BIT_WIDTH_16BIT,
+                                                      I2S_SLOT_MODE_STEREO),
+      .gpio_cfg =
+          {
+              .mclk = pin_config0
+                          .mck_io_num,  // some codecs may require mclk signal,
+                                        // this example doesn't need it
+              .bclk = pin_config0.bck_io_num,
+              .ws = pin_config0.ws_io_num,
+              .dout = pin_config0.data_out_num,
+              .din = pin_config0.data_in_num,
+              .invert_flags =
+                  {
+                      .mclk_inv = false,
+                      .bclk_inv = false,
+                      .ws_inv = false,
+                  },
+          },
+  };
+  ESP_ERROR_CHECK(i2s_channel_init_std_mode(tx_chan, &tx_std_cfg));
+  i2s_channel_enable(tx_chan);
 #endif
 
   ESP_LOGI(TAG, "Start codec chip");
@@ -2848,7 +2874,7 @@ void app_main(void) {
 #endif
 
   xTaskCreatePinnedToCore(&ota_server_task, "ota", 14 * 256, NULL,
-                          OTA_TASK_PRIORITY, t_ota_task, OTA_TASK_CORE_ID);
+                          OTA_TASK_PRIORITY, &t_ota_task, OTA_TASK_CORE_ID);
 
   xTaskCreatePinnedToCore(&http_get_task, "http", 4 * 1024, NULL,
                           HTTP_TASK_PRIORITY, &t_http_get_task,

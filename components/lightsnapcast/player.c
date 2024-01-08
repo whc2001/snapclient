@@ -10,24 +10,27 @@
 #include "freertos/semphr.h"
 #include "freertos/task.h"
 
-//#include "lwip/stats.h"
+// #include "lwip/stats.h"
 
 #include "esp_log.h"
-
+#include "esp_timer.h"
 #include "esp_wifi.h"
-
 #include "soc/rtc.h"
 
-#include "driver/timer.h"
+#if SOC_I2S_SUPPORTS_APLL
+#include "clk_ctrl_os.h"
+#endif
 
 #include "MedianFilter.h"
 #include "board_pins_config.h"
+#include "driver/gptimer.h"
 #include "player.h"
 #include "snapcast.h"
 
-#include "i2s.h"  // use custom i2s driver instead of IDF version
-
+// #include "driver/i2s.h"  // use legacy IDF version
 #include <math.h>
+
+#include "driver/i2s_std.h"
 
 #define USE_SAMPLE_INSERTION 0  // TODO: doesn't work as intended
 
@@ -43,12 +46,15 @@ static const char *TAG = "PLAYER";
  * apll_freq = xtal_freq * (4 + sdm2 + sdm1/256 + sdm0/65536)/((o_div + 2) * 2)
  * I2S bit clock is (apll_freq / 16)
  */
-static int apll_normal_predefine[6] = {0, 0, 0, 0, 0, 0};
-static int apll_corr_predefine[][6] = {{0, 0, 0, 0, 0, 0}, {0, 0, 0, 0, 0, 0}};
+static uint32_t apll_normal_predefine[6] = {0, 0, 0, 0, 0, 0};
+static uint32_t apll_corr_predefine[][6] = {{0, 0, 0, 0, 0, 0},
+                                            {0, 0, 0, 0, 0, 0}};
 
 static SemaphoreHandle_t latencyBufSemaphoreHandle = NULL;
 
 static bool latencyBuffFull = 0;
+
+static gptimer_handle_t gptimer = NULL;
 
 static sMedianFilter_t latencyMedianFilter;
 static sMedianNode_t latencyMedianLong[LATENCY_MEDIAN_FILTER_LEN];
@@ -92,6 +98,8 @@ extern esp_err_t audio_set_mute(bool mute);
 #define CONFIG_SLAVE_I2S_DATAOUT_PIN 5
 */
 
+static i2s_chan_handle_t tx_chan = NULL;  // I2S tx channel handler
+
 /**
  *
  */
@@ -124,14 +132,15 @@ static esp_err_t player_setup_i2s(i2s_port_t i2sNum,
   i2sDmaBufMaxLen = 9;
 #endif
 
-  fi2s_clk = setting->sr * setting->ch * setting->bits * m_scale;
+  // check i2s_set_get_apll_freq() how it is done
+  fi2s_clk = 2 * setting->sr *
+             I2S_MCLK_MULTIPLE_256;  // setting->ch * setting->bits * m_scale;
 
   apll_normal_predefine[0] = setting->bits;
   apll_normal_predefine[1] = setting->sr;
-  if (i2s_apll_calculate_fi2s(
-          fi2s_clk, setting->bits, &apll_normal_predefine[2],
-          &apll_normal_predefine[3], &apll_normal_predefine[4],
-          &apll_normal_predefine[5]) != ESP_OK) {
+  if (rtc_clk_apll_coeff_calc(
+          fi2s_clk, &apll_normal_predefine[5], &apll_normal_predefine[2],
+          &apll_normal_predefine[3], &apll_normal_predefine[4]) == 0) {
     ESP_LOGE(TAG, "ERROR, fi2s_clk");
   }
 
@@ -140,50 +149,99 @@ static esp_err_t player_setup_i2s(i2s_port_t i2sNum,
 
   apll_corr_predefine[0][0] = setting->bits;
   apll_corr_predefine[0][1] = setting->sr * UPPER_SR_SCALER;
-  if (i2s_apll_calculate_fi2s(
-          fi2s_clk * UPPER_SR_SCALER, setting->bits, &apll_corr_predefine[0][2],
-          &apll_corr_predefine[0][3], &apll_corr_predefine[0][4],
-          &apll_corr_predefine[0][5]) != ESP_OK) {
+  if (rtc_clk_apll_coeff_calc(
+          fi2s_clk * UPPER_SR_SCALER, &apll_corr_predefine[0][5],
+          &apll_corr_predefine[0][2], &apll_corr_predefine[0][3],
+          &apll_corr_predefine[0][4]) == 0) {
     ESP_LOGE(TAG, "ERROR, fi2s_clk * %f", UPPER_SR_SCALER);
   }
   apll_corr_predefine[1][0] = setting->bits;
   apll_corr_predefine[1][1] = setting->sr * LOWER_SR_SCALER;
-  if (i2s_apll_calculate_fi2s(
-          fi2s_clk * LOWER_SR_SCALER, setting->bits, &apll_corr_predefine[1][2],
-          &apll_corr_predefine[1][3], &apll_corr_predefine[1][4],
-          &apll_corr_predefine[1][5]) != ESP_OK) {
+  if (rtc_clk_apll_coeff_calc(
+          fi2s_clk * LOWER_SR_SCALER, &apll_corr_predefine[1][5],
+          &apll_corr_predefine[1][2], &apll_corr_predefine[1][3],
+          &apll_corr_predefine[1][4]) == 0) {
     ESP_LOGE(TAG, "ERROR, fi2s_clk * %f", LOWER_SR_SCALER);
   }
 
-  ESP_LOGI(TAG, "player_setup_i2s: dma_buf_len is %d, dma_buf_count is %d",
+  ESP_LOGI(TAG, "player_setup_i2s: dma_buf_len is %ld, dma_buf_count is %ld",
            i2sDmaBufMaxLen, i2sDmaBufCnt);
 
-  i2s_config_t i2s_config0 = {
-      .mode = I2S_MODE_MASTER | I2S_MODE_TX,  // Only TX
-      .sample_rate = setting->sr,
-      .bits_per_sample = setting->bits,
-      .channel_format = I2S_CHANNEL_FMT_RIGHT_LEFT,  // 2-channels
-      .communication_format = I2S_COMM_FORMAT_STAND_I2S,
-      .dma_buf_count = i2sDmaBufCnt,
-      .dma_buf_len = i2sDmaBufMaxLen,
-      .intr_alloc_flags = 1,  // Default interrupt priority
-      .use_apll = true,
-      .fixed_mclk = 0,
-      .tx_desc_auto_clear = true  // Auto clear tx descriptor on underflow
-  };
+  //
+  //  i2s_config_t i2s_config0 = {
+  //      .mode = I2S_MODE_MASTER | I2S_MODE_TX,  // Only TX
+  //      .sample_rate = setting->sr,
+  //      .bits_per_sample = setting->bits,
+  //      .channel_format = I2S_CHANNEL_FMT_RIGHT_LEFT,  // 2-channels
+  //      .communication_format = I2S_COMM_FORMAT_STAND_I2S,
+  //      .dma_buf_count = i2sDmaBufCnt,
+  //      .dma_buf_len = i2sDmaBufMaxLen,
+  //      .intr_alloc_flags = 1,  // Default interrupt priority
+  //      .use_apll = true,
+  //      .fixed_mclk = 0,
+  //      .tx_desc_auto_clear = true  // Auto clear tx descriptor on underflow
+  //  };
+  //
+  //  board_i2s_pin_t pin_config0;
+  //  get_i2s_pins(i2sNum, &pin_config0);
+  //
+  //  i2s_driver_uninstall(i2sNum);
+  //  i2s_driver_install(i2sNum, &i2s_config0, 0, NULL);
+  //  i2s_set_pin(i2sNum, (const i2s_pin_config_t *)&pin_config0);
+  //
+  // #if CONFIG_AUDIO_BOARD_CUSTOM
+  ////  i2s_mclk_gpio_select(i2sNum, CONFIG_MASTER_I2S_MCLK_PIN);
+  // #else
+  ////  i2s_mclk_gpio_select(i2sNum, GPIO_NUM_0);
+  // #endif
 
-  i2s_pin_config_t pin_config0;
+  if (tx_chan) {
+    i2s_channel_disable(tx_chan);
+    i2s_del_channel(tx_chan);
+    tx_chan = NULL;
+
+    //	  periph_rtc_apll_release();
+  }
+
+  i2s_chan_config_t tx_chan_cfg = {
+      .id = i2sNum,
+      .role = I2S_ROLE_MASTER,
+      .dma_desc_num = i2sDmaBufCnt,
+      .dma_frame_num = i2sDmaBufMaxLen,
+      .auto_clear = false,
+  };
+  ESP_ERROR_CHECK(i2s_new_channel(&tx_chan_cfg, &tx_chan, NULL));
+
+  board_i2s_pin_t pin_config0;
   get_i2s_pins(i2sNum, &pin_config0);
 
-  i2s_custom_driver_uninstall(i2sNum);
-  i2s_custom_driver_install(i2sNum, &i2s_config0, 0, NULL);
-  i2s_custom_set_pin(i2sNum, &pin_config0);
-
-#if CONFIG_AUDIO_BOARD_CUSTOM
-  i2s_mclk_gpio_select(i2sNum, CONFIG_MASTER_I2S_MCLK_PIN);
-#else
-  i2s_mclk_gpio_select(i2sNum, GPIO_NUM_0);
-#endif
+  i2s_std_clk_config_t i2s_clkcfg = {
+      .sample_rate_hz = setting->sr,
+      .clk_src = I2S_CLK_SRC_APLL,
+      .mclk_multiple = I2S_MCLK_MULTIPLE_256,
+  };
+  i2s_std_config_t tx_std_cfg = {
+      .clk_cfg = i2s_clkcfg,
+      .slot_cfg = I2S_STD_PHILIPS_SLOT_DEFAULT_CONFIG(setting->bits,
+                                                      I2S_SLOT_MODE_STEREO),
+      .gpio_cfg =
+          {
+              .mclk = pin_config0
+                          .mck_io_num,  // some codecs may require mclk signal,
+                                        // this example doesn't need it
+              .bclk = pin_config0.bck_io_num,
+              .ws = pin_config0.ws_io_num,
+              .dout = pin_config0.data_out_num,
+              .din = pin_config0.data_in_num,
+              .invert_flags =
+                  {
+                      .mclk_inv = false,
+                      .bclk_inv = false,
+                      .ws_inv = false,
+                  },
+          },
+  };
+  ESP_ERROR_CHECK(i2s_channel_init_std_mode(tx_chan, &tx_std_cfg));
 
   return 0;
 }
@@ -575,71 +633,113 @@ int32_t server_now(int64_t *sNow, int64_t *diff2Server) {
  * flash cache is disabled, we can allocate this interrupt without the
  * ESP_INTR_FLAG_IRAM flag and use the normal API.
  */
-void IRAM_ATTR timer_group0_isr(void *para) {
-  timer_spinlock_take(TIMER_GROUP_1);
+static bool IRAM_ATTR timer_group0_alarm_cb(
+    gptimer_handle_t timer, const gptimer_alarm_event_data_t *edata,
+    void *user_data) {
+  // timer_spinlock_take(TIMER_GROUP_1);
 
   BaseType_t xHigherPriorityTaskWoken = pdFALSE;
 
   // Retrieve the interrupt status and the counter value
   //   from the timer that reported the interrupt
-  uint32_t timer_intr = timer_group_get_intr_status_in_isr(TIMER_GROUP_1);
+  //  uint32_t timer_intr = timer_group_get_intr_status_in_isr(TIMER_GROUP_1);
 
   // Clear the interrupt
   //   and update the alarm time for the timer with without reload
-  if (timer_intr & TIMER_INTR_T1) {
-    timer_group_clr_intr_status_in_isr(TIMER_GROUP_1, TIMER_1);
+  //  if (timer_intr & TIMER_INTR_T1)
+  //  {
+  //    timer_group_clr_intr_status_in_isr(TIMER_GROUP_1, TIMER_1);
 
-    uint64_t timer_counter_value =
-        timer_group_get_counter_value_in_isr(TIMER_GROUP_1, TIMER_1);
+  //    uint64_t timer_counter_value =
+  //        timer_group_get_counter_value_in_isr(TIMER_GROUP_1, TIMER_1);
 
-    // Notify the task in the task's notification value.
-    xTaskNotifyFromISR(playerTaskHandle, (uint32_t)timer_counter_value,
-                       eSetValueWithOverwrite, &xHigherPriorityTaskWoken);
-  }
+  uint64_t timer_counter_value = edata->count_value;
+  //  ESP_ERROR_CHECK(gptimer_get_raw_count(gptimer, &timer_counter_value));
 
-  timer_spinlock_give(TIMER_GROUP_1);
+  // Notify the task in the task's notification value.
+  xTaskNotifyFromISR(playerTaskHandle, (uint32_t)timer_counter_value,
+                     eSetValueWithOverwrite, &xHigherPriorityTaskWoken);
+  //  }
 
-  if (xHigherPriorityTaskWoken) {
-    portYIELD_FROM_ISR();
-  }
+  // timer_spinlock_give(TIMER_GROUP_1);
+
+  //  if (xHigherPriorityTaskWoken) {
+  //    portYIELD_FROM_ISR();
+  //  }
+  return xHigherPriorityTaskWoken == pdTRUE;
 }
 
-static void tg0_timer_deinit(void) { timer_deinit(TIMER_GROUP_1, TIMER_1); }
+static void tg0_timer_deinit(void) {
+  //	timer_deinit(TIMER_GROUP_1, TIMER_1);
+  if (gptimer) {
+    gptimer_stop(gptimer);
+    ESP_ERROR_CHECK(gptimer_disable(gptimer));
+    ESP_ERROR_CHECK(gptimer_del_timer(gptimer));
+    gptimer = NULL;
+  }
+}
 
 /*
  *
  */
 static void tg0_timer_init(void) {
-  // Select and initialize basic parameters of the timer
-  timer_config_t config = {
-      //.divider = 8,		// 100ns ticks
-      .divider = 80,  // 80,  // 1µs ticks
-      .counter_dir = TIMER_COUNT_UP,
-      .counter_en = TIMER_PAUSE,
-      .alarm_en = TIMER_ALARM_EN,
-      .auto_reload = TIMER_AUTORELOAD_DIS,
-  };  // default clock source is APB
-  timer_init(TIMER_GROUP_1, TIMER_1, &config);
+  //  // Select and initialize basic parameters of the timer
+  //  timer_config_t config = {
+  //      //.divider = 8,		// 100ns ticks
+  //      .divider = 80,  // 80,  // 1µs ticks
+  //      .counter_dir = TIMER_COUNT_UP,
+  //      .counter_en = TIMER_PAUSE,
+  //      .alarm_en = TIMER_ALARM_EN,
+  //      .auto_reload = TIMER_AUTORELOAD_DIS,
+  //  };  // default clock source is APB
+  //  timer_init(TIMER_GROUP_1, TIMER_1, &config);
+  //
+  //  // Configure the alarm value and the interrupt on alarm.
+  //  // timer_set_alarm_value(TIMER_GROUP_1, TIMER_1, 0);
+  //  timer_enable_intr(TIMER_GROUP_1, TIMER_1);
+  //  if (timer_isr_register(TIMER_GROUP_1, TIMER_1, timer_group0_isr_cb, NULL,
+  //                         ESP_INTR_FLAG_IRAM | ESP_INTR_FLAG_LEVEL3,
+  //                         NULL) != ESP_OK) {
+  //    ESP_LOGE(TAG, "unable to register timer 1 callback");
+  //  }
 
-  // Configure the alarm value and the interrupt on alarm.
-  // timer_set_alarm_value(TIMER_GROUP_1, TIMER_1, 0);
-  timer_enable_intr(TIMER_GROUP_1, TIMER_1);
-  if (timer_isr_register(TIMER_GROUP_1, TIMER_1, timer_group0_isr, NULL,
-                         ESP_INTR_FLAG_IRAM | ESP_INTR_FLAG_LEVEL3,
-                         NULL) != ESP_OK) {
-    ESP_LOGE(TAG, "unable to register timer 1 callback");
-  }
+  tg0_timer_deinit();
+
+  gptimer_config_t timer_config = {
+      .clk_src = GPTIMER_CLK_SRC_DEFAULT,
+      .direction = GPTIMER_COUNT_UP,
+      .resolution_hz = 1000000,  // 1MHz, 1 tick=1us
+  };
+  ESP_ERROR_CHECK(gptimer_new_timer(&timer_config, &gptimer));
+
+  gptimer_event_callbacks_t cbs = {
+      .on_alarm = timer_group0_alarm_cb,
+  };
+  ESP_ERROR_CHECK(gptimer_register_event_callbacks(gptimer, &cbs, NULL));
+
+  ESP_LOGI(TAG, "enable initial sync timer");
+  ESP_ERROR_CHECK(gptimer_enable(gptimer));
 }
 
 /**
  *
  */
 static void tg0_timer1_start(uint64_t alarm_value) {
-  timer_pause(TIMER_GROUP_1, TIMER_1);
-  timer_set_alarm_value(TIMER_GROUP_1, TIMER_1, alarm_value);
-  timer_set_counter_value(TIMER_GROUP_1, TIMER_1, 0);
-  timer_set_alarm(TIMER_GROUP_1, TIMER_1, TIMER_ALARM_EN);
-  timer_start(TIMER_GROUP_1, TIMER_1);
+  //  timer_pause(TIMER_GROUP_1, TIMER_1);
+  //  timer_set_alarm_value(TIMER_GROUP_1, TIMER_1, alarm_value);
+  //  timer_set_counter_value(TIMER_GROUP_1, TIMER_1, 0);
+  //  timer_set_alarm(TIMER_GROUP_1, TIMER_1, TIMER_ALARM_EN);
+  //  timer_start(TIMER_GROUP_1, TIMER_1);
+
+  gptimer_stop(gptimer);
+  ESP_ERROR_CHECK(gptimer_set_raw_count(gptimer, 0));
+  gptimer_alarm_config_t alarm_config1 = {
+      .alarm_count = alarm_value,  // period
+      .reload_count = 0,
+      .flags.auto_reload_on_alarm = false,
+  };
+  ESP_ERROR_CHECK(gptimer_set_alarm_action(gptimer, &alarm_config1));
+  ESP_ERROR_CHECK(gptimer_start(gptimer));
 
   // ESP_LOGI(TAG, "started age timer");
 }
@@ -678,7 +778,9 @@ void adjust_apll(int8_t direction) {
     direction = 0;
   }
 
-  rtc_clk_apll_enable(1, sdm0, sdm1, sdm2, o_div);
+  //  periph_rtc_apll_acquire();
+  rtc_clk_apll_coeff_set(o_div, sdm0, sdm1, sdm2);
+  // rtc_clk_apll_enable(1, sdm0, sdm1, sdm2, o_div);
 
   currentDir = direction;
 }
@@ -750,7 +852,7 @@ int32_t allocate_pcm_chunk_memory_caps(pcm_chunk_message_t *pcmChunk,
       if (pcmChunk->fragment->payload == NULL) {
         ESP_LOGE(
             TAG,
-            "Failed to heap_caps_malloc(%d, %d) memory for pcm chunk payload",
+            "Failed to heap_caps_malloc(%u, %ld) memory for pcm chunk payload",
             bytes, caps);
 
         ret = -2;
@@ -1104,11 +1206,13 @@ static void player_task(void *pvParameters) {
 
         if ((scSet.sr != __scSet.sr) || (scSet.bits != __scSet.bits) ||
             (scSet.ch != __scSet.ch)) {
-          i2s_custom_start(I2S_NUM_0);
+          // i2s_start(I2S_NUM_0);
+          i2s_channel_enable(tx_chan);
           audio_set_mute(true);
-          i2s_custom_stop(I2S_NUM_0);
+          // i2s_stop(I2S_NUM_0);
+          i2s_channel_disable(tx_chan);
 
-          ret = player_setup_i2s(I2S_NUM_0, &currentSnapcastSetting);
+          ret = player_setup_i2s(I2S_NUM_0, &__scSet);
           if (ret < 0) {
             ESP_LOGE(TAG, "player_setup_i2s failed: %d", ret);
 
@@ -1119,7 +1223,13 @@ static void player_task(void *pvParameters) {
           currentDir = 1;
           adjust_apll(0);
 
-          i2s_custom_set_clk(I2S_NUM_0, __scSet.sr, __scSet.bits, __scSet.ch);
+          // i2s_set_clk(I2S_NUM_0, __scSet.sr, __scSet.bits, __scSet.ch);
+
+          // not necessary ??
+          //          i2s_std_clk_config_t clk_cfg = {
+          //
+          //          };
+          //          i2s_channel_reconfig_std_clock(tx_chan, clk_cfg);
 
           initialSync = 0;
         }
@@ -1147,8 +1257,8 @@ static void player_task(void *pvParameters) {
         //        xSemaphoreGive(playerPcmQueueMux);
 
         ESP_LOGI(TAG,
-                 "snapserver config changed, buffer %dms, chunk %d frames, "
-                 "sample rate %d, ch %d, bits %d mute %d latency %d",
+                 "snapserver config changed, buffer %ldms, chunk %ld frames, "
+                 "sample rate %ld, ch %d, bits %d mute %d latency %ld",
                  __scSet.buf_ms, __scSet.chkInFrames, __scSet.sr, __scSet.ch,
                  __scSet.bits, __scSet.muted, __scSet.cDacLat_ms);
 
@@ -1237,11 +1347,13 @@ static void player_task(void *pvParameters) {
           MEDIANFILTER_Init(&shortMedianFilter);
           MEDIANFILTER_Init(&miniMedianFilter);
 
-          timer_set_auto_reload(TIMER_GROUP_1, TIMER_1, TIMER_AUTORELOAD_DIS);
+          // timer_set_auto_reload(TIMER_GROUP_1, TIMER_1,
+          // TIMER_AUTORELOAD_DIS);
           tg0_timer1_start(-age);  // timer with 1µs ticks
 
-          i2s_custom_stop(I2S_NUM_0);
-          i2s_custom_zero_dma_buffer(I2S_NUM_0);
+          i2s_channel_disable(tx_chan);
+          //          i2s_stop(I2S_NUM_0);
+          //          i2s_zero_dma_buffer(I2S_NUM_0);
 
           adjust_apll(0);  // reset to normal playback speed
 
@@ -1261,9 +1373,18 @@ static void player_task(void *pvParameters) {
             p_payload = fragment->payload;
             size = fragment->size;
 
-            i2s_custom_init_dma_tx_queues(I2S_NUM_0, (uint8_t *)p_payload, size,
-                                          &written, &currentDescriptor,
-                                          &currentDescriptorOffset);
+            //            i2s_init_dma_tx_queues(I2S_NUM_0, (uint8_t
+            //            *)p_payload, size,
+            //                                          &written,
+            //                                          &currentDescriptor,
+            //                                          &currentDescriptorOffset);
+
+            ESP_ERROR_CHECK(
+                i2s_channel_preload_data(tx_chan, p_payload, size, &written));
+            //            ESP_LOGE(TAG, "preload %d bytes", written);
+
+            // TODO: do error check if DMA is full here
+
             size -= written;
             p_payload += written;
 
@@ -1280,7 +1401,6 @@ static void player_task(void *pvParameters) {
 
             tmpCnt--;
           }
-
           //          xTaskNotifyStateClear(playerTaskHandle);
 
           // Wait to be notified of a timer interrupt.
@@ -1291,9 +1411,11 @@ static void player_task(void *pvParameters) {
           // or use simple task delay for this
           //           vTaskDelay( pdMS_TO_TICKS(-age / 1000) );
 
-          timer_pause(TIMER_GROUP_1, TIMER_1);
+          //          timer_pause(TIMER_GROUP_1, TIMER_1);
+          gptimer_stop(gptimer);
 
-          i2s_custom_start(I2S_NUM_0);
+          //          i2s_start(I2S_NUM_0);
+          i2s_channel_enable(tx_chan);
 
           // get timer value so we can get the real age
           timer_val = (int64_t)notifiedValue;
@@ -1302,35 +1424,38 @@ static void player_task(void *pvParameters) {
           age = (int64_t)timer_val - (-age);
 
           // check if we need to write remaining data
-          if (size != 0) {
-            do {
-              written = 0;
-              if (i2s_custom_write(I2S_NUM_0, p_payload, (size_t)size, &written,
-                                   portMAX_DELAY) != ESP_OK) {
-                ESP_LOGE(TAG, "i2s_playback_task: I2S write error");
-              }
-              if (written < size) {
-                ESP_LOGE(TAG,
-                         "i2s_playback_task: I2S didn't "
-                         "write all data");
-              }
-              size -= written;
-              p_payload += written;
-
-              if (size == 0) {
-                if (fragment->nextFragment != NULL) {
-                  fragment = fragment->nextFragment;
-                  p_payload = fragment->payload;
-                  size = fragment->size;
-                } else {
-                  free_pcm_chunk(chnk);
-                  chnk = NULL;
-
-                  break;
-                }
-              }
-            } while (1);
-          }
+          //          if (size != 0) {
+          //            do {
+          //              written = 0;
+          //              if (i2s_channel_write(tx_chan, p_payload, size,
+          //              &written, portMAX_DELAY) != ESP_OK) {
+          ////              if (i2s_write(I2S_NUM_0, p_payload, (size_t)size,
+          ///&written, /                                   portMAX_DELAY) !=
+          /// ESP_OK) {
+          //                ESP_LOGE(TAG, "i2s_playback_task: I2S write error");
+          //              }
+          //              if (written < size) {
+          //                ESP_LOGE(TAG,
+          //                         "i2s_playback_task: I2S didn't "
+          //                         "write all data");
+          //              }
+          //              size -= written;
+          //              p_payload += written;
+          //
+          //              if (size == 0) {
+          //                if (fragment->nextFragment != NULL) {
+          //                  fragment = fragment->nextFragment;
+          //                  p_payload = fragment->payload;
+          //                  size = fragment->size;
+          //                } else {
+          //                  free_pcm_chunk(chnk);
+          //                  chnk = NULL;
+          //
+          //                  break;
+          //                }
+          //              }
+          //            } while (1);
+          //          }
 
           initialSync = 1;
 
@@ -1367,8 +1492,11 @@ static void player_task(void *pvParameters) {
         wifi_ap_record_t ap;
         esp_wifi_sta_get_ap_info(&ap);
 
-        timer_pause(TIMER_GROUP_1, TIMER_1);
-        timer_set_auto_reload(TIMER_GROUP_1, TIMER_1, TIMER_AUTORELOAD_DIS);
+        gptimer_stop(gptimer);
+
+        //        timer_pause(TIMER_GROUP_1, TIMER_1);
+        //        timer_set_auto_reload(TIMER_GROUP_1, TIMER_1,
+        //        TIMER_AUTORELOAD_DIS);
 
         //        xSemaphoreTake(playerPcmQueueMux, portMAX_DELAY);
         //        ESP_LOGW(TAG,
@@ -1392,16 +1520,17 @@ static void player_task(void *pvParameters) {
 
         audio_set_mute(true);
 
-        i2s_custom_stop(I2S_NUM_0);
+        //        i2s_stop(I2S_NUM_0);
+        i2s_channel_disable(tx_chan);
 
         continue;
       }
 
       const bool enableControlLoop = true;
 
-      const int64_t shortOffset = 2;              //µs, softsync
-      const int64_t miniOffset = 1;               //µs, softsync
-      const int64_t hardResyncThreshold = 10000;  //µs, hard sync
+      const int64_t shortOffset = 2;              // µs, softsync
+      const int64_t miniOffset = 1;               // µs, softsync
+      const int64_t hardResyncThreshold = 10000;  // µs, hard sync
 
       if (initialSync == 1) {
         avg = age;
@@ -1417,7 +1546,7 @@ static void player_task(void *pvParameters) {
 
         // resync hard if we are getting very late / early.
         // rest gets tuned in through apll speed control
-        if ((msgWaiting == 0) || (MEDIANFILTER_isFull(&shortMedianFilter,0) &&
+        if ((msgWaiting == 0) || (MEDIANFILTER_isFull(&shortMedianFilter, 0) &&
                                   (abs(shortMedian) > hardResyncThreshold)))
         //        if (msgWaiting == 0)
         {
@@ -1453,12 +1582,15 @@ static void player_task(void *pvParameters) {
 
           //          xSemaphoreGive(playerPcmQueueMux);
 
-          timer_pause(TIMER_GROUP_1, TIMER_1);
-          timer_set_auto_reload(TIMER_GROUP_1, TIMER_1, TIMER_AUTORELOAD_DIS);
+          //          timer_pause(TIMER_GROUP_1, TIMER_1);
+          //          timer_set_auto_reload(TIMER_GROUP_1, TIMER_1,
+          //          TIMER_AUTORELOAD_DIS);
+          gptimer_stop(gptimer);
 
           audio_set_mute(true);
 
-          i2s_custom_stop(I2S_NUM_0);
+          //          i2s_stop(I2S_NUM_0);
+          i2s_channel_disable(tx_chan);
 
           initialSync = 0;
 
@@ -1467,7 +1599,7 @@ static void player_task(void *pvParameters) {
 
 #if USE_SAMPLE_INSERTION  // WIP: insert samples to adjust sync
         if ((enableControlLoop == true) &&
-            (MEDIANFILTER_isFull(&shortMedianFilter,0))) {
+            (MEDIANFILTER_isFull(&shortMedianFilter, 0))) {
           if (avg < -miniOffset) {  // we are early
             dir = -1;
             dir_insert_sample = -1;
@@ -1478,7 +1610,7 @@ static void player_task(void *pvParameters) {
         }
 #else  // use APLL to adjust sync
         if ((enableControlLoop == true) &&
-            (MEDIANFILTER_isFull(&shortMedianFilter,0))) {
+            (MEDIANFILTER_isFull(&shortMedianFilter, 0))) {
           if ((shortMedian < -shortOffset) && (miniMedian < -miniOffset) &&
               (avg < -miniOffset)) {  // we are early
             dir = -1;
@@ -1505,7 +1637,8 @@ static void player_task(void *pvParameters) {
 
           //          xSemaphoreTake(playerPcmQueueMux, portMAX_DELAY);
 
-          //ESP_LOGI (TAG, "%d, %lldus, q %d", dir, avg, uxQueueMessagesWaiting(pcmChkQHdl));
+          //          ESP_LOGI (TAG, "%d, %lldus, q %d", dir, avg,
+          //          uxQueueMessagesWaiting(pcmChkQHdl));
 
           //                     ESP_LOGI (TAG, "%d, %lldus, %lldus %llds,
           //                     %lld.%lldms", dir, age, avg, sec, msec, usec);
@@ -1540,90 +1673,104 @@ static void player_task(void *pvParameters) {
             uint32_t sampleSizeInBytes = 4 * 3;
 
             if (dir_insert_sample == -1) {
-              if (i2s_custom_write(I2S_NUM_0, p_payload,
-                                   (size_t)sampleSizeInBytes, &written,
-                                   portMAX_DELAY) != ESP_OK) {
+              if (i2s_channel_write(tx_chan, p_payload, sampleSizeInBytes,
+                                    &written, portMAX_DELAY) != ESP_OK)
+                //              if (i2s_write(I2S_NUM_0, p_payload,
+                //                                   (size_t)sampleSizeInBytes,
+                //                                   &written, portMAX_DELAY) !=
+                //                                   ESP_OK) {
                 ESP_LOGE(TAG, "i2s_playback_task:  I2S write error %d", 1);
-              }
-            } else if (dir_insert_sample == 1) {
-              size -= sampleSizeInBytes;
             }
+          }
+          else if (dir_insert_sample == 1) {
+            size -= sampleSizeInBytes;
+          }
 
-            dir_insert_sample = 0;
+          dir_insert_sample = 0;
 #endif
 
-            if (i2s_custom_write(I2S_NUM_0, p_payload, (size_t)size, &written,
-                                 portMAX_DELAY) != ESP_OK) {
-              ESP_LOGE(TAG, "i2s_playback_task: I2S write error %d", size);
+          if (i2s_channel_write(tx_chan, p_payload, size, &written,
+                                portMAX_DELAY) != ESP_OK) {
+            //            if (i2s_write(I2S_NUM_0, p_payload, (size_t)size,
+            //            &written,
+            //                                 portMAX_DELAY) != ESP_OK) {
+            ESP_LOGE(TAG, "i2s_playback_task: I2S write error %d", size);
+          }
+
+          if (written < size) {
+            ESP_LOGE(TAG, "i2s_playback_task: I2S didn't write all data");
+          }
+          size -= written;
+          p_payload += written;
+
+          if (size == 0) {
+            if (fragment->nextFragment != NULL) {
+              fragment = fragment->nextFragment;
+              p_payload = fragment->payload;
+              size = fragment->size;
+
+              // ESP_LOGI (TAG, "%s: fragmented", __func__);
+            } else {
+              free_pcm_chunk(chnk);
+              chnk = NULL;
+
+              break;
             }
-
-            if (written < size) {
-              ESP_LOGE(TAG, "i2s_playback_task: I2S didn't write all data");
-            }
-            size -= written;
-            p_payload += written;
-
-            if (size == 0) {
-              if (fragment->nextFragment != NULL) {
-                fragment = fragment->nextFragment;
-                p_payload = fragment->payload;
-                size = fragment->size;
-
-                // ESP_LOGI (TAG, "%s: fragmented", __func__);
-              } else {
-                free_pcm_chunk(chnk);
-                chnk = NULL;
-
-                break;
-              }
-            }
-          } while (1);
-        } else {
-          // here we have an empty fragment because of memory allocation error.
-          // fill DMA with zeros so we don't get out of sync
-          written = 0;
-          const size_t write_size = 4;
-          uint8_t tmpBuf[write_size];
-
-          memset(tmpBuf, 0, sizeof(tmpBuf));
-
-          do {
-            if (i2s_custom_write(I2S_NUM_0, tmpBuf, (size_t)write_size,
-                                 &written, portMAX_DELAY) != ESP_OK) {
-              ESP_LOGE(TAG, "i2s_playback_task: I2S write error %d", size);
-            }
-
-            size -= written;
-          } while (size);
-
-          free_pcm_chunk(chnk);
-          chnk = NULL;
+          }
         }
+        while (1)
+          ;
+      } else {
+        // here we have an empty fragment because of memory allocation error.
+        // fill DMA with zeros so we don't get out of sync
+        written = 0;
+        const size_t write_size = 4;
+        uint8_t tmpBuf[write_size];
+
+        memset(tmpBuf, 0, sizeof(tmpBuf));
+
+        do {
+          if (i2s_channel_write(tx_chan, tmpBuf, write_size, &written,
+                                portMAX_DELAY) != ESP_OK) {
+            //            if (i2s_write(I2S_NUM_0, tmpBuf, (size_t)write_size,
+            //                                 &written, portMAX_DELAY) !=
+            //                                 ESP_OK) {
+            ESP_LOGE(TAG, "i2s_playback_task: I2S write error %d", size);
+          }
+
+          size -= written;
+        } while (size);
+
+        free_pcm_chunk(chnk);
+        chnk = NULL;
       }
-    } else {
-      int64_t sec, msec, usec;
-
-      sec = diff2Server / 1000000;
-      usec = diff2Server - sec * 1000000;
-      msec = usec / 1000;
-      usec = usec % 1000;
-
-      //      xSemaphoreTake(playerPcmQueueMux, portMAX_DELAY);
-      if (pcmChkQHdl != NULL) {
-        ESP_LOGE(TAG,
-                 "Couldn't get PCM chunk, recv: messages waiting %d, "
-                 "diff2Server: %llds, %lld.%lldms",
-                 uxQueueMessagesWaiting(pcmChkQHdl), sec, msec, usec);
-      }
-      //      xSemaphoreGive(playerPcmQueueMux);
-
-      dir = 0;
-
-      initialSync = 0;
-
-      audio_set_mute(true);
-
-      i2s_custom_stop(I2S_NUM_0);
     }
   }
+  else {
+    int64_t sec, msec, usec;
+
+    sec = diff2Server / 1000000;
+    usec = diff2Server - sec * 1000000;
+    msec = usec / 1000;
+    usec = usec % 1000;
+
+    //      xSemaphoreTake(playerPcmQueueMux, portMAX_DELAY);
+    if (pcmChkQHdl != NULL) {
+      ESP_LOGE(TAG,
+               "Couldn't get PCM chunk, recv: messages waiting %d, "
+               "diff2Server: %llds, %lld.%lldms",
+               uxQueueMessagesWaiting(pcmChkQHdl), sec, msec, usec);
+    }
+    //      xSemaphoreGive(playerPcmQueueMux);
+
+    dir = 0;
+
+    initialSync = 0;
+
+    audio_set_mute(true);
+
+    //      i2s_stop(I2S_NUM_0);
+    i2s_channel_disable(tx_chan);
+  }
+}
 }
