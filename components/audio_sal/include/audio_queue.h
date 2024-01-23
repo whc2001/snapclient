@@ -27,6 +27,8 @@
 #ifndef __AUDIO_QUEUE_H__
 #define __AUDIO_QUEUE_H__
 
+#include <stdint.h>
+
 #ifdef __cplusplus
 extern "C" {
 #endif

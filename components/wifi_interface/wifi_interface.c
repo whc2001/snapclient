@@ -5,16 +5,16 @@
     Must be taken over/merge with wifi provision
 */
 
-// #include "esp_event.h"
-#include "wifi_interface.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/event_groups.h"
+#include "freertos/task.h"
 
+// #include "esp_event.h"
 #include "esp_event.h"
 #include "esp_log.h"
 #include "esp_mac.h"
 #include "esp_wifi.h"
-#include "freertos/FreeRTOS.h"
-#include "freertos/event_groups.h"
-#include "freertos/task.h"
+#include "wifi_interface.h"
 
 #if ENABLE_WIFI_PROVISIONING
 #include <string.h>  // for memcpy

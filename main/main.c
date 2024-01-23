@@ -14,12 +14,13 @@
 #include "esp_system.h"
 #include "esp_timer.h"
 #include "esp_wifi.h"
-#if CONFIG_SNAPCLIENT_ENABLE_ETHERNET
-#include "eth_interface.h"
-#endif
 #include "freertos/FreeRTOS.h"
 #include "freertos/event_groups.h"
 #include "freertos/task.h"
+#if CONFIG_SNAPCLIENT_ENABLE_ETHERNET
+#include "eth_interface.h"
+#endif
+
 #include "nvs_flash.h"
 #include "wifi_interface.h"
 
