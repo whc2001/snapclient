@@ -51,12 +51,14 @@ menu "Custom Audio Board"
 	menu "I2S master interface"
        	config MASTER_I2S_MCLK_PIN
             int "Master i2s mclk"
+            default 3 if DAC_ADAU1961
             default 0
             help
                 Master audio interface master clock.
 
         config MASTER_I2S_BCK_PIN
             int "Master i2s bck"
+            default 15 if DAC_ADAU1961
             default 23 if DAC_MAX98357
             default 23
             help
@@ -64,6 +66,7 @@ menu "Custom Audio Board"
 
         config MASTER_I2S_LRCK_PIN
             int "Master i2s lrck"
+            default 13 if DAC_ADAU1961
             default 24 if DAC_MAX98357
             default 13
             help
@@ -71,6 +74,7 @@ menu "Custom Audio Board"
 
         config MASTER_I2S_DATAOUT_PIN
             int "Master i2s data out"
+            default 4 if DAC_ADAU1961
             default 25 if DAC_MAX98357
             default 14
             help

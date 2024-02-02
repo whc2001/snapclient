@@ -2843,6 +2843,14 @@ void app_main(void) {
   audio_hal_set_mute(board_handle->audio_hal,
                      true);  // ensure no noise is sent after firmware crash
 
+#if CONFIG_AUDIO_BOARD_CUSTOM && CONFIG_DAC_ADAU1961
+  if (tx_chan) {
+    i2s_channel_disable(tx_chan);
+    i2s_del_channel(tx_chan);
+    tx_chan = NULL;
+  }
+#endif
+
   ESP_LOGI(TAG, "init player");
   init_player();
   // setup_ma120();

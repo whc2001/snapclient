@@ -108,7 +108,7 @@ static esp_err_t player_setup_i2s(i2s_port_t i2sNum,
   int fi2s_clk;
 
 #if USE_SAMPLE_INSERTION
-  i2sDmaBufMaxLen = 6;
+  i2sDmaBufMaxLen = 12;
   i2sDmaBufCnt = CHNK_CTRL_CNT * (setting->chkInFrames /
                                   i2sDmaBufMaxLen);  // 288 * CHNK_CTRL_CNT;
 #else
@@ -1676,7 +1676,7 @@ static void player_task(void *pvParameters) {
 #if USE_SAMPLE_INSERTION
             // uint32_t sampleSizeInBytes = (uint32_t)(scSet.bits / 8) *
             // scSet.ch * (uint32_t)(miniMedian / (1E6 / scSet.sr));
-            uint32_t sampleSizeInBytes = (scSet.bits / 8) * scSet.ch * 1;
+            uint32_t sampleSizeInBytes = (scSet.bits / 8) * scSet.ch * 2;
 
             if (dir_insert_sample == -1) {
               if (i2s_channel_write(tx_chan, p_payload, sampleSizeInBytes,
