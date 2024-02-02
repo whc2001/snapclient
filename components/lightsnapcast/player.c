@@ -32,7 +32,7 @@
 
 #include "driver/i2s_std.h"
 
-#define USE_SAMPLE_INSERTION 0  // TODO: doesn't work as intended
+#define USE_SAMPLE_INSERTION CONFIG_USE_SAMPLE_INSERTION
 
 #define SYNC_TASK_PRIORITY (configMAX_PRIORITIES - 1)
 #define SYNC_TASK_CORE_ID 1  // tskNO_AFFINITY
@@ -105,10 +105,16 @@ static i2s_chan_handle_t tx_chan = NULL;  // I2S tx channel handler
  */
 static esp_err_t player_setup_i2s(i2s_port_t i2sNum,
                                   snapcastSetting_t *setting) {
+  int fi2s_clk;
+
+#if USE_SAMPLE_INSERTION
+  i2sDmaBufMaxLen = 6;
+  i2sDmaBufCnt = CHNK_CTRL_CNT * (setting->chkInFrames /
+                                  i2sDmaBufMaxLen);  // 288 * CHNK_CTRL_CNT;
+#else
+  const int __dmaBufMaxLen = 1024;
   int __dmaBufCnt;
   int __dmaBufLen;
-  const int __dmaBufMaxLen = 1024;
-  int m_scale = 8, fi2s_clk;
 
   __dmaBufCnt = 1;
   __dmaBufLen = setting->chkInFrames;
@@ -126,10 +132,6 @@ static esp_err_t player_setup_i2s(i2s_port_t i2sNum,
 
   i2sDmaBufCnt = __dmaBufCnt * CHNK_CTRL_CNT;
   i2sDmaBufMaxLen = __dmaBufLen;
-
-#if USE_SAMPLE_INSERTION
-  i2sDmaBufCnt = 128;
-  i2sDmaBufMaxLen = 9;
 #endif
 
   // check i2s_set_get_apll_freq() how it is done
@@ -1600,10 +1602,12 @@ static void player_task(void *pvParameters) {
 #if USE_SAMPLE_INSERTION  // WIP: insert samples to adjust sync
         if ((enableControlLoop == true) &&
             (MEDIANFILTER_isFull(&shortMedianFilter, 0))) {
-          if (avg < -miniOffset) {  // we are early
+          if ((shortMedian < -shortOffset) && (miniMedian < -miniOffset) &&
+              (avg < -miniOffset)) {  // we are early
             dir = -1;
             dir_insert_sample = -1;
-          } else if (avg > miniOffset) {  // we are late
+          } else if ((shortMedian > shortOffset) && (miniMedian > miniOffset) &&
+                     (avg > miniOffset)) {  // we are late
             dir = 1;
             dir_insert_sample = 1;
           }
@@ -1640,11 +1644,11 @@ static void player_task(void *pvParameters) {
           //          ESP_LOGI (TAG, "%d, %lldus, q %d", dir, avg,
           //          uxQueueMessagesWaiting(pcmChkQHdl));
 
-          //                     ESP_LOGI (TAG, "%d, %lldus, %lldus %llds,
-          //                     %lld.%lldms", dir, age, avg, sec, msec, usec);
+          //		   ESP_LOGI (TAG, "%d, %lldus, %lldus %llds,
+          //%lld.%lldms", dir, age, avg, sec, msec, usec);
 
-          //          ESP_LOGI(TAG, "%d, %lldus, %lldus, %lldus, q:%d", dir,
-          //          avg, shortMedian, miniMedian,
+          // ESP_LOGI(TAG, "%d, %lldus, %lldus, %lldus, q:%d", dir, avg,
+          //          shortMedian, miniMedian,
           //          uxQueueMessagesWaiting(pcmChkQHdl));
 
           //           ESP_LOGI( TAG, "8b f
@@ -1670,107 +1674,98 @@ static void player_task(void *pvParameters) {
             written = 0;
 
 #if USE_SAMPLE_INSERTION
-            uint32_t sampleSizeInBytes = 4 * 3;
+            // uint32_t sampleSizeInBytes = (uint32_t)(scSet.bits / 8) *
+            // scSet.ch * (uint32_t)(miniMedian / (1E6 / scSet.sr));
+            uint32_t sampleSizeInBytes = (scSet.bits / 8) * scSet.ch * 1;
 
             if (dir_insert_sample == -1) {
               if (i2s_channel_write(tx_chan, p_payload, sampleSizeInBytes,
-                                    &written, portMAX_DELAY) != ESP_OK)
-                //              if (i2s_write(I2S_NUM_0, p_payload,
-                //                                   (size_t)sampleSizeInBytes,
-                //                                   &written, portMAX_DELAY) !=
-                //                                   ESP_OK) {
+                                    &written, portMAX_DELAY) != ESP_OK) {
                 ESP_LOGE(TAG, "i2s_playback_task:  I2S write error %d", 1);
+              }
+            } else if (dir_insert_sample == 1) {
+              size -= sampleSizeInBytes;
             }
-          }
-          else if (dir_insert_sample == 1) {
-            size -= sampleSizeInBytes;
-          }
 
-          dir_insert_sample = 0;
+            dir_insert_sample = 0;
 #endif
 
-          if (i2s_channel_write(tx_chan, p_payload, size, &written,
-                                portMAX_DELAY) != ESP_OK) {
-            //            if (i2s_write(I2S_NUM_0, p_payload, (size_t)size,
-            //            &written,
-            //                                 portMAX_DELAY) != ESP_OK) {
-            ESP_LOGE(TAG, "i2s_playback_task: I2S write error %d", size);
-          }
-
-          if (written < size) {
-            ESP_LOGE(TAG, "i2s_playback_task: I2S didn't write all data");
-          }
-          size -= written;
-          p_payload += written;
-
-          if (size == 0) {
-            if (fragment->nextFragment != NULL) {
-              fragment = fragment->nextFragment;
-              p_payload = fragment->payload;
-              size = fragment->size;
-
-              // ESP_LOGI (TAG, "%s: fragmented", __func__);
-            } else {
-              free_pcm_chunk(chnk);
-              chnk = NULL;
-
-              break;
+            if (i2s_channel_write(tx_chan, p_payload, size, &written,
+                                  portMAX_DELAY) != ESP_OK) {
+              ESP_LOGE(TAG, "i2s_playback_task: I2S write error %d", size);
             }
-          }
+
+            if (written < size) {
+              ESP_LOGE(TAG, "i2s_playback_task: I2S didn't write all data");
+            }
+            size -= written;
+            p_payload += written;
+
+            if (size == 0) {
+              if (fragment->nextFragment != NULL) {
+                fragment = fragment->nextFragment;
+                p_payload = fragment->payload;
+                size = fragment->size;
+
+                // ESP_LOGI (TAG, "%s: fragmented", __func__);
+              } else {
+                free_pcm_chunk(chnk);
+                chnk = NULL;
+
+                break;
+              }
+            }
+          } while (1);
+        } else {
+          // here we have an empty fragment because of memory allocation error.
+          // fill DMA with zeros so we don't get out of sync
+          written = 0;
+          const size_t write_size = 4;
+          uint8_t tmpBuf[write_size];
+
+          memset(tmpBuf, 0, sizeof(tmpBuf));
+
+          do {
+            if (i2s_channel_write(tx_chan, tmpBuf, write_size, &written,
+                                  portMAX_DELAY) != ESP_OK) {
+              //            if (i2s_write(I2S_NUM_0, tmpBuf, (size_t)write_size,
+              //                                 &written, portMAX_DELAY) !=
+              //                                 ESP_OK) {
+              ESP_LOGE(TAG, "i2s_playback_task: I2S write error %d", size);
+            }
+
+            size -= written;
+          } while (size);
+
+          free_pcm_chunk(chnk);
+          chnk = NULL;
         }
-        while (1)
-          ;
-      } else {
-        // here we have an empty fragment because of memory allocation error.
-        // fill DMA with zeros so we don't get out of sync
-        written = 0;
-        const size_t write_size = 4;
-        uint8_t tmpBuf[write_size];
-
-        memset(tmpBuf, 0, sizeof(tmpBuf));
-
-        do {
-          if (i2s_channel_write(tx_chan, tmpBuf, write_size, &written,
-                                portMAX_DELAY) != ESP_OK) {
-            //            if (i2s_write(I2S_NUM_0, tmpBuf, (size_t)write_size,
-            //                                 &written, portMAX_DELAY) !=
-            //                                 ESP_OK) {
-            ESP_LOGE(TAG, "i2s_playback_task: I2S write error %d", size);
-          }
-
-          size -= written;
-        } while (size);
-
-        free_pcm_chunk(chnk);
-        chnk = NULL;
       }
+    } else {
+      int64_t sec, msec, usec;
+
+      sec = diff2Server / 1000000;
+      usec = diff2Server - sec * 1000000;
+      msec = usec / 1000;
+      usec = usec % 1000;
+
+      //      xSemaphoreTake(playerPcmQueueMux, portMAX_DELAY);
+      if (pcmChkQHdl != NULL) {
+        ESP_LOGE(TAG,
+                 "Couldn't get PCM chunk, recv: messages waiting %d, "
+                 "diff2Server: %llds, %lld.%lldms",
+                 uxQueueMessagesWaiting(pcmChkQHdl), sec, msec, usec);
+      }
+      //      xSemaphoreGive(playerPcmQueueMux);
+
+      dir = 0;
+
+      initialSync = 0;
+
+      audio_set_mute(true);
+
+      //      i2s_stop(I2S_NUM_0);
+      i2s_channel_disable(tx_chan);
     }
   }
-  else {
-    int64_t sec, msec, usec;
-
-    sec = diff2Server / 1000000;
-    usec = diff2Server - sec * 1000000;
-    msec = usec / 1000;
-    usec = usec % 1000;
-
-    //      xSemaphoreTake(playerPcmQueueMux, portMAX_DELAY);
-    if (pcmChkQHdl != NULL) {
-      ESP_LOGE(TAG,
-               "Couldn't get PCM chunk, recv: messages waiting %d, "
-               "diff2Server: %llds, %lld.%lldms",
-               uxQueueMessagesWaiting(pcmChkQHdl), sec, msec, usec);
-    }
-    //      xSemaphoreGive(playerPcmQueueMux);
-
-    dir = 0;
-
-    initialSync = 0;
-
-    audio_set_mute(true);
-
-    //      i2s_stop(I2S_NUM_0);
-    i2s_channel_disable(tx_chan);
-  }
-}
 }
