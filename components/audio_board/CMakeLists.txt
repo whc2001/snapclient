@@ -4,7 +4,6 @@ set(COMPONENT_ADD_INCLUDEDIRS ./include)
 set(COMPONENT_REQUIRES driver)
 set(COMPONENT_PRIV_REQUIRES esp_peripherals audio_sal audio_hal)
 
-#[[
 if (CONFIG_ESP_LYRAT_V4_2_BOARD)
 message(STATUS "Current board name is " CONFIG_ESP_LYRAT_V4_2_BOARD)
 list(APPEND COMPONENT_ADD_INCLUDEDIRS ./lyrat_v4_2)
@@ -13,7 +12,6 @@ set(COMPONENT_SRCS
 ./lyrat_v4_2/board_pins_config.c
 )
 endif()
-]]
 
 if (CONFIG_ESP_LYRAT_V4_3_BOARD)
 message(STATUS "Current board name is " CONFIG_ESP_LYRAT_V4_3_BOARD)
