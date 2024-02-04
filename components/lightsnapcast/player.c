@@ -39,6 +39,14 @@
 
 static const char *TAG = "PLAYER";
 
+#if USE_SAMPLE_INSERTION
+const uint32_t SHORT_OFFSET = 128;
+const uint32_t MINI_OFFSET = 64;
+#else
+const uint32_t SHORT_OFFSET = 2;
+const uint32_t MINI_OFFSET = 1;
+#endif
+
 /**
  * @brief Pre define APLL parameters, save compute time. They are calculated in
  * player_setup_i2s() | bits_per_sample | rate | sdm0 | sdm1 | sdm2 | odir
@@ -1530,8 +1538,8 @@ static void player_task(void *pvParameters) {
 
       const bool enableControlLoop = true;
 
-      const int64_t shortOffset = 2;              // µs, softsync
-      const int64_t miniOffset = 1;               // µs, softsync
+      const int64_t shortOffset = SHORT_OFFSET;   // µs, softsync
+      const int64_t miniOffset = MINI_OFFSET;     // µs, softsync
       const int64_t hardResyncThreshold = 10000;  // µs, hard sync
 
       if (initialSync == 1) {
