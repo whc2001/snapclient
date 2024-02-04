@@ -19,7 +19,7 @@ audio streams with sample rates up to 48Khz maybe more, I didn't test.
 
 Please check out the task list and feel free to fill in.
 
-I dropped the usage of ADF completely but copied stripped down, needed components to this project.
+I dropped the usage of ADF completely but copied stripped down, needed components to this project (using <b>ESP-ADF v2.6</b>).
 This was necessary because ADF was using flac in closed source precompiled library
 which made it impossible to get good results for multiroom syncing. IDF's I2S driver was also copied
 to project's components and adapted. Originally it wasn't possible to pre load DMA buffers with audio
