@@ -2838,7 +2838,7 @@ void app_main(void) {
     vTaskDelay(portMAX_DELAY);
   }
 
-  audio_hal_ctrl_codec(board_handle->audio_hal, AUDIO_HAL_CODEC_MODE_BOTH,
+  audio_hal_ctrl_codec(board_handle->audio_hal, AUDIO_HAL_CODEC_MODE_DECODE,
                        AUDIO_HAL_CTRL_START);
   audio_hal_set_mute(board_handle->audio_hal,
                      true);  // ensure no noise is sent after firmware crash

@@ -93,6 +93,9 @@ static snapcastSetting_t currentSnapcastSetting;
 
 static void tg0_timer_init(void);
 static void tg0_timer_deinit(void);
+
+static bool gpTimerRunning = false;
+
 static void player_task(void *pvParameters);
 
 extern esp_err_t audio_set_mute(bool mute);
@@ -107,19 +110,45 @@ extern esp_err_t audio_set_mute(bool mute);
 */
 
 static i2s_chan_handle_t tx_chan = NULL;  // I2S tx channel handler
+static bool i2sEnabled = false;
+
+/**
+ *
+ */
+esp_err_t my_i2s_channel_disable(i2s_chan_handle_t handle) {
+  if (i2sEnabled == true) {
+    i2sEnabled = false;
+
+    return i2s_channel_disable(handle);
+  }
+
+  return ESP_OK;
+}
+
+/**
+ *
+ */
+esp_err_t my_i2s_channel_enable(i2s_chan_handle_t handle) {
+  if (i2sEnabled == false) {
+    i2sEnabled = true;
+
+    return i2s_channel_enable(handle);
+  }
+
+  return ESP_OK;
+}
 
 /**
  *
  */
 static esp_err_t player_setup_i2s(i2s_port_t i2sNum,
                                   snapcastSetting_t *setting) {
-  int fi2s_clk;
-
 #if USE_SAMPLE_INSERTION
   i2sDmaBufMaxLen = 12;
   i2sDmaBufCnt = CHNK_CTRL_CNT * (setting->chkInFrames /
                                   i2sDmaBufMaxLen);  // 288 * CHNK_CTRL_CNT;
 #else
+  int fi2s_clk;
   const int __dmaBufMaxLen = 1024;
   int __dmaBufCnt;
   int __dmaBufLen;
@@ -140,7 +169,6 @@ static esp_err_t player_setup_i2s(i2s_port_t i2sNum,
 
   i2sDmaBufCnt = __dmaBufCnt * CHNK_CTRL_CNT;
   i2sDmaBufMaxLen = __dmaBufLen;
-#endif
 
   // check i2s_set_get_apll_freq() how it is done
   fi2s_clk = 2 * setting->sr *
@@ -173,40 +201,13 @@ static esp_err_t player_setup_i2s(i2s_port_t i2sNum,
           &apll_corr_predefine[1][4]) == 0) {
     ESP_LOGE(TAG, "ERROR, fi2s_clk * %f", LOWER_SR_SCALER);
   }
+#endif
 
   ESP_LOGI(TAG, "player_setup_i2s: dma_buf_len is %ld, dma_buf_count is %ld",
            i2sDmaBufMaxLen, i2sDmaBufCnt);
 
-  //
-  //  i2s_config_t i2s_config0 = {
-  //      .mode = I2S_MODE_MASTER | I2S_MODE_TX,  // Only TX
-  //      .sample_rate = setting->sr,
-  //      .bits_per_sample = setting->bits,
-  //      .channel_format = I2S_CHANNEL_FMT_RIGHT_LEFT,  // 2-channels
-  //      .communication_format = I2S_COMM_FORMAT_STAND_I2S,
-  //      .dma_buf_count = i2sDmaBufCnt,
-  //      .dma_buf_len = i2sDmaBufMaxLen,
-  //      .intr_alloc_flags = 1,  // Default interrupt priority
-  //      .use_apll = true,
-  //      .fixed_mclk = 0,
-  //      .tx_desc_auto_clear = true  // Auto clear tx descriptor on underflow
-  //  };
-  //
-  //  board_i2s_pin_t pin_config0;
-  //  get_i2s_pins(i2sNum, &pin_config0);
-  //
-  //  i2s_driver_uninstall(i2sNum);
-  //  i2s_driver_install(i2sNum, &i2s_config0, 0, NULL);
-  //  i2s_set_pin(i2sNum, (const i2s_pin_config_t *)&pin_config0);
-  //
-  // #if CONFIG_AUDIO_BOARD_CUSTOM
-  ////  i2s_mclk_gpio_select(i2sNum, CONFIG_MASTER_I2S_MCLK_PIN);
-  // #else
-  ////  i2s_mclk_gpio_select(i2sNum, GPIO_NUM_0);
-  // #endif
-
   if (tx_chan) {
-    i2s_channel_disable(tx_chan);
+    my_i2s_channel_disable(tx_chan);
     i2s_del_channel(tx_chan);
     tx_chan = NULL;
 
@@ -650,39 +651,45 @@ static bool IRAM_ATTR timer_group0_alarm_cb(
 
   BaseType_t xHigherPriorityTaskWoken = pdFALSE;
 
-  // Retrieve the interrupt status and the counter value
-  //   from the timer that reported the interrupt
-  //  uint32_t timer_intr = timer_group_get_intr_status_in_isr(TIMER_GROUP_1);
-
-  // Clear the interrupt
-  //   and update the alarm time for the timer with without reload
-  //  if (timer_intr & TIMER_INTR_T1)
-  //  {
-  //    timer_group_clr_intr_status_in_isr(TIMER_GROUP_1, TIMER_1);
-
-  //    uint64_t timer_counter_value =
-  //        timer_group_get_counter_value_in_isr(TIMER_GROUP_1, TIMER_1);
-
   uint64_t timer_counter_value = edata->count_value;
-  //  ESP_ERROR_CHECK(gptimer_get_raw_count(gptimer, &timer_counter_value));
 
   // Notify the task in the task's notification value.
   xTaskNotifyFromISR(playerTaskHandle, (uint32_t)timer_counter_value,
                      eSetValueWithOverwrite, &xHigherPriorityTaskWoken);
-  //  }
 
-  // timer_spinlock_give(TIMER_GROUP_1);
-
-  //  if (xHigherPriorityTaskWoken) {
-  //    portYIELD_FROM_ISR();
-  //  }
   return xHigherPriorityTaskWoken == pdTRUE;
+}
+
+/**
+ *
+ */
+esp_err_t my_gptimer_stop(gptimer_handle_t timer) {
+  if (gpTimerRunning == true) {
+    gpTimerRunning = false;
+
+    return gptimer_stop(timer);
+  }
+
+  return ESP_OK;
+}
+
+/**
+ *
+ */
+esp_err_t my_gptimer_start(gptimer_handle_t timer) {
+  if (gpTimerRunning == false) {
+    gpTimerRunning = true;
+
+    return gptimer_start(timer);
+  }
+
+  return ESP_OK;
 }
 
 static void tg0_timer_deinit(void) {
   //	timer_deinit(TIMER_GROUP_1, TIMER_1);
   if (gptimer) {
-    gptimer_stop(gptimer);
+    ESP_ERROR_CHECK(my_gptimer_stop(gptimer));
     ESP_ERROR_CHECK(gptimer_disable(gptimer));
     ESP_ERROR_CHECK(gptimer_del_timer(gptimer));
     gptimer = NULL;
@@ -693,28 +700,9 @@ static void tg0_timer_deinit(void) {
  *
  */
 static void tg0_timer_init(void) {
-  //  // Select and initialize basic parameters of the timer
-  //  timer_config_t config = {
-  //      //.divider = 8,		// 100ns ticks
-  //      .divider = 80,  // 80,  // 1µs ticks
-  //      .counter_dir = TIMER_COUNT_UP,
-  //      .counter_en = TIMER_PAUSE,
-  //      .alarm_en = TIMER_ALARM_EN,
-  //      .auto_reload = TIMER_AUTORELOAD_DIS,
-  //  };  // default clock source is APB
-  //  timer_init(TIMER_GROUP_1, TIMER_1, &config);
-  //
-  //  // Configure the alarm value and the interrupt on alarm.
-  //  // timer_set_alarm_value(TIMER_GROUP_1, TIMER_1, 0);
-  //  timer_enable_intr(TIMER_GROUP_1, TIMER_1);
-  //  if (timer_isr_register(TIMER_GROUP_1, TIMER_1, timer_group0_isr_cb, NULL,
-  //                         ESP_INTR_FLAG_IRAM | ESP_INTR_FLAG_LEVEL3,
-  //                         NULL) != ESP_OK) {
-  //    ESP_LOGE(TAG, "unable to register timer 1 callback");
-  //  }
-
   tg0_timer_deinit();
 
+  // Select and initialize basic parameters of the timer
   gptimer_config_t timer_config = {
       .clk_src = GPTIMER_CLK_SRC_DEFAULT,
       .direction = GPTIMER_COUNT_UP,
@@ -741,15 +729,17 @@ static void tg0_timer1_start(uint64_t alarm_value) {
   //  timer_set_alarm(TIMER_GROUP_1, TIMER_1, TIMER_ALARM_EN);
   //  timer_start(TIMER_GROUP_1, TIMER_1);
 
-  gptimer_stop(gptimer);
-  ESP_ERROR_CHECK(gptimer_set_raw_count(gptimer, 0));
-  gptimer_alarm_config_t alarm_config1 = {
-      .alarm_count = alarm_value,  // period
-      .reload_count = 0,
-      .flags.auto_reload_on_alarm = false,
-  };
-  ESP_ERROR_CHECK(gptimer_set_alarm_action(gptimer, &alarm_config1));
-  ESP_ERROR_CHECK(gptimer_start(gptimer));
+  if (gptimer) {
+    my_gptimer_stop(gptimer);
+    ESP_ERROR_CHECK(gptimer_set_raw_count(gptimer, 0));
+    gptimer_alarm_config_t alarm_config1 = {
+        .alarm_count = alarm_value,  // period
+        .reload_count = 0,
+        .flags.auto_reload_on_alarm = false,
+    };
+    ESP_ERROR_CHECK(gptimer_set_alarm_action(gptimer, &alarm_config1));
+    ESP_ERROR_CHECK(my_gptimer_start(gptimer));
+  }
 
   // ESP_LOGI(TAG, "started age timer");
 }
@@ -1217,10 +1207,10 @@ static void player_task(void *pvParameters) {
         if ((scSet.sr != __scSet.sr) || (scSet.bits != __scSet.bits) ||
             (scSet.ch != __scSet.ch)) {
           // i2s_start(I2S_NUM_0);
-          i2s_channel_enable(tx_chan);
+          my_i2s_channel_enable(tx_chan);
           audio_set_mute(true);
           // i2s_stop(I2S_NUM_0);
-          i2s_channel_disable(tx_chan);
+          my_i2s_channel_disable(tx_chan);
 
           ret = player_setup_i2s(I2S_NUM_0, &__scSet);
           if (ret < 0) {
@@ -1231,7 +1221,9 @@ static void player_task(void *pvParameters) {
 
           // force adjust_apll() to set playback speed
           currentDir = 1;
+#if !USE_SAMPLE_INSERTION
           adjust_apll(0);
+#endif
 
           // i2s_set_clk(I2S_NUM_0, __scSet.sr, __scSet.bits, __scSet.ch);
 
@@ -1361,11 +1353,13 @@ static void player_task(void *pvParameters) {
           // TIMER_AUTORELOAD_DIS);
           tg0_timer1_start(-age);  // timer with 1µs ticks
 
-          i2s_channel_disable(tx_chan);
+          my_i2s_channel_disable(tx_chan);
           //          i2s_stop(I2S_NUM_0);
           //          i2s_zero_dma_buffer(I2S_NUM_0);
 
+#if !USE_SAMPLE_INSERTION
           adjust_apll(0);  // reset to normal playback speed
+#endif
 
           uint32_t currentDescriptor = 0, currentDescriptorOffset = 0;
           uint32_t tmpCnt = CHNK_CTRL_CNT;
@@ -1422,10 +1416,10 @@ static void player_task(void *pvParameters) {
           //           vTaskDelay( pdMS_TO_TICKS(-age / 1000) );
 
           //          timer_pause(TIMER_GROUP_1, TIMER_1);
-          gptimer_stop(gptimer);
+          my_gptimer_stop(gptimer);
 
           //          i2s_start(I2S_NUM_0);
-          i2s_channel_enable(tx_chan);
+          my_i2s_channel_enable(tx_chan);
 
           // get timer value so we can get the real age
           timer_val = (int64_t)notifiedValue;
@@ -1502,7 +1496,7 @@ static void player_task(void *pvParameters) {
         wifi_ap_record_t ap;
         esp_wifi_sta_get_ap_info(&ap);
 
-        gptimer_stop(gptimer);
+        my_gptimer_stop(gptimer);
 
         //        timer_pause(TIMER_GROUP_1, TIMER_1);
         //        timer_set_auto_reload(TIMER_GROUP_1, TIMER_1,
@@ -1531,7 +1525,7 @@ static void player_task(void *pvParameters) {
         audio_set_mute(true);
 
         //        i2s_stop(I2S_NUM_0);
-        i2s_channel_disable(tx_chan);
+        my_i2s_channel_disable(tx_chan);
 
         continue;
       }
@@ -1595,12 +1589,12 @@ static void player_task(void *pvParameters) {
           //          timer_pause(TIMER_GROUP_1, TIMER_1);
           //          timer_set_auto_reload(TIMER_GROUP_1, TIMER_1,
           //          TIMER_AUTORELOAD_DIS);
-          gptimer_stop(gptimer);
+          my_gptimer_stop(gptimer);
 
           audio_set_mute(true);
 
           //          i2s_stop(I2S_NUM_0);
-          i2s_channel_disable(tx_chan);
+          my_i2s_channel_disable(tx_chan);
 
           initialSync = 0;
 
@@ -1773,7 +1767,7 @@ static void player_task(void *pvParameters) {
       audio_set_mute(true);
 
       //      i2s_stop(I2S_NUM_0);
-      i2s_channel_disable(tx_chan);
+      my_i2s_channel_disable(tx_chan);
     }
   }
 }

@@ -31,7 +31,7 @@ set(COMPONENT_SRCS
 )
 endif()
 
-#[[
+
 if (CONFIG_ESP_LYRATD_MSC_V2_1_BOARD)
 message(STATUS "Current board name is " CONFIG_ESP_LYRATD_MSC_V2_1_BOARD)
 list(APPEND COMPONENT_ADD_INCLUDEDIRS ./lyratd_msc_v2_1)
@@ -56,10 +56,11 @@ list(APPEND COMPONENT_ADD_INCLUDEDIRS ./esp32_korvo_du1906)
 set(COMPONENT_SRCS
 ./esp32_korvo_du1906/board.c
 ./esp32_korvo_du1906/board_pins_config.c
-./esp32_korvo_du1906/du1906_bar_pattern.c
+#./esp32_korvo_du1906/du1906_bar_pattern.c
 )
 endif()
 
+#[[
 if (CONFIG_ESP32_S2_KALUGA_1_V1_2_BOARD)
 message(STATUS "Current board name is " CONFIG_ESP32_S2_KALUGA_1_V1_2_BOARD)
 list(APPEND COMPONENT_ADD_INCLUDEDIRS ./esp32_s2_kaluga_1_v1_2)

@@ -30,9 +30,9 @@
 #include "audio_hal.h"
 #include "board_def.h"
 #include "board_pins_config.h"
-#include "display_service.h"
-#include "esp_peripherals.h"
-#include "periph_sdcard.h"
+// #include "display_service.h"
+// #include "esp_peripherals.h"
+// #include "periph_sdcard.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -66,7 +66,7 @@ audio_hal_handle_t audio_board_codec_init(void);
  *
  * @return The audio display service handle
  */
-display_service_handle_t audio_board_led_init(void);
+// display_service_handle_t audio_board_led_init(void);
 
 /**
  * @brief Initialize key peripheral
@@ -77,7 +77,7 @@ display_service_handle_t audio_board_led_init(void);
  *     - ESP_OK, success
  *     - Others, fail
  */
-esp_err_t audio_board_key_init(esp_periph_set_handle_t set);
+// esp_err_t audio_board_key_init(esp_periph_set_handle_t set);
 
 /**
  * @brief Initialize sdcard peripheral
@@ -88,8 +88,8 @@ esp_err_t audio_board_key_init(esp_periph_set_handle_t set);
  *     - ESP_OK, success
  *     - Others, fail
  */
-esp_err_t audio_board_sdcard_init(esp_periph_set_handle_t set,
-                                  periph_sdcard_mode_t mode);
+// esp_err_t audio_board_sdcard_init(esp_periph_set_handle_t set,
+//                                   periph_sdcard_mode_t mode);
 
 /**
  * @brief Query audio_board_handle
