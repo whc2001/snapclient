@@ -30,7 +30,7 @@
 #include "i2c_bus.h"
 #include <string.h>
 
-#ifdef CONFIG_ESP_LYRAT_V4_3_BOARD
+#if defined(CONFIG_ESP_LYRAT_V4_3_BOARD) || defined(CONFIG_ESP_AI_THINKER_ES8388_BOARD)
 #include "headphone_detect.h"
 #endif
 
@@ -292,7 +292,7 @@ es8388_deinit (void)
   res = es_write_reg (ES8388_ADDR, ES8388_CHIPPOWER,
                       0xFF); // reset and stop es8388
   i2c_bus_delete (i2c_handle);
-#ifdef CONFIG_ESP_LYRAT_V4_3_BOARD
+#if defined(CONFIG_ESP_LYRAT_V4_3_BOARD) || defined(CONFIG_ESP_AI_THINKER_ES8388_BOARD)
   headphone_detect_deinit ();
 #endif
 
@@ -308,7 +308,7 @@ esp_err_t
 es8388_init (audio_hal_codec_config_t *cfg)
 {
   int res = 0;
-#ifdef CONFIG_ESP_LYRAT_V4_3_BOARD
+#if defined(CONFIG_ESP_LYRAT_V4_3_BOARD) || defined(CONFIG_ESP_AI_THINKER_ES8388_BOARD)
   headphone_detect_init (get_headphone_detect_gpio ());
 #endif
 
@@ -445,11 +445,28 @@ es8388_set_voice_volume (int volume)
     volume = 0;
   else if (volume > 100)
     volume = 100;
+  /* Audio Settings can be checked here: 
+   * https://dl.radxa.com/rock2/docs/hw/ds/ES8388%20user%20Guide.pdf
+   *
+   * ES8388_DACCONTROL4 & ES8388_DACCONTROL5
+   * 0 = 0dB
+   * 192 = -96dB
+   *
+   * ES8388_DACCONTROL24 - ES8388_DACCONTROL27
+   * 0 = -45dB
+   * 33 = 4.5dB
+   */
+  
+
+  int inv_volume = (100 - volume)*1.92;
+  res = es_write_reg (ES8388_ADDR, ES8388_DACCONTROL5, inv_volume);
+  res |= es_write_reg (ES8388_ADDR, ES8388_DACCONTROL4, inv_volume);
+
   volume /= 3;
-  res = es_write_reg (ES8388_ADDR, ES8388_DACCONTROL24, volume);
+  res |= es_write_reg (ES8388_ADDR, ES8388_DACCONTROL24, volume);
   res |= es_write_reg (ES8388_ADDR, ES8388_DACCONTROL25, volume);
-  res |= es_write_reg (ES8388_ADDR, ES8388_DACCONTROL26, 0);
-  res |= es_write_reg (ES8388_ADDR, ES8388_DACCONTROL27, 0);
+  res |= es_write_reg (ES8388_ADDR, ES8388_DACCONTROL26, volume);
+  res |= es_write_reg (ES8388_ADDR, ES8388_DACCONTROL27, volume);
   return res;
 }
 
