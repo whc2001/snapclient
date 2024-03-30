@@ -33,7 +33,8 @@
 #include "esp_log.h"
 #include "i2c_bus.h"
 
-#if defined(CONFIG_ESP_LYRAT_V4_3_BOARD) || defined(CONFIG_ESP_AI_THINKER_ES8388_BOARD)
+#if defined(CONFIG_ESP_LYRAT_V4_3_BOARD) || \
+    defined(CONFIG_ESP_AI_THINKER_ES8388_BOARD)
 #include "headphone_detect.h"
 #endif
 
@@ -266,15 +267,16 @@ esp_err_t es8388_i2s_config_clock(es_i2s_clock_t cfg) {
 
 esp_err_t es8388_deinit(void) {
   int res = 0;
-  
+
   res = es_write_reg(ES8388_ADDR, ES8388_CHIPPOWER,
                      0xFF);  // reset and stop es8388
   i2c_bus_delete(i2c_handle);
-#if defined(CONFIG_ESP_LYRAT_V4_3_BOARD) || defined(CONFIG_ESP_AI_THINKER_ES8388_BOARD)
+#if defined(CONFIG_ESP_LYRAT_V4_3_BOARD) || \
+    defined(CONFIG_ESP_AI_THINKER_ES8388_BOARD)
   headphone_detect_deinit();
-  res = es_write_reg (ES8388_ADDR, ES8388_CHIPPOWER,
-                      0xFF); // reset and stop es8388
-  i2c_bus_delete (i2c_handle);
+  res = es_write_reg(ES8388_ADDR, ES8388_CHIPPOWER,
+                     0xFF);  // reset and stop es8388
+  i2c_bus_delete(i2c_handle);
 #endif
 
   audio_codec_volume_deinit(dac_vol_handle);
@@ -289,7 +291,8 @@ esp_err_t es8388_deinit(void) {
 esp_err_t es8388_init(audio_hal_codec_config_t *cfg) {
   int res = 0;
 
-#if defined(CONFIG_ESP_LYRAT_V4_3_BOARD) || defined(CONFIG_ESP_AI_THINKER_ES8388_BOARD)
+#if defined(CONFIG_ESP_LYRAT_V4_3_BOARD) || \
+    defined(CONFIG_ESP_AI_THINKER_ES8388_BOARD)
   headphone_detect_init(get_headphone_detect_gpio());
 #endif
 
@@ -332,12 +335,14 @@ esp_err_t es8388_init(audio_hal_codec_config_t *cfg) {
                       0x80);  // set internal ADC and DAC use the same LRCK
                               // clock, ADC LRCK as internal LRCK
 
-  res |= es_write_reg (ES8388_ADDR, ES8388_DACCONTROL23, 0x00); // vroi=0
-  res |= es_write_reg (ES8388_ADDR, ES8388_DACCONTROL24, 0x1E); // Set L1 R1 L2 R2 volume. 0x00: -30dB, 0x1E: 0dB, 0x21: 3dB
-  res |= es_write_reg (ES8388_ADDR, ES8388_DACCONTROL25, 0x1E);
-  res |= es_write_reg (ES8388_ADDR, ES8388_DACCONTROL26, 0x1E);
-  res |= es_write_reg (ES8388_ADDR, ES8388_DACCONTROL27, 0x1E);
-  res |= es8388_set_adc_dac_volume (ES_MODULE_DAC, 0, 0);       // 0db
+  res |= es_write_reg(ES8388_ADDR, ES8388_DACCONTROL23, 0x00);  // vroi=0
+  res |= es_write_reg(
+      ES8388_ADDR, ES8388_DACCONTROL24,
+      0x1E);  // Set L1 R1 L2 R2 volume. 0x00: -30dB, 0x1E: 0dB, 0x21: 3dB
+  res |= es_write_reg(ES8388_ADDR, ES8388_DACCONTROL25, 0x1E);
+  res |= es_write_reg(ES8388_ADDR, ES8388_DACCONTROL26, 0x1E);
+  res |= es_write_reg(ES8388_ADDR, ES8388_DACCONTROL27, 0x1E);
+  res |= es8388_set_adc_dac_volume(ES_MODULE_DAC, 0, 0);  // 0db
   int tmp = 0;
   if (AUDIO_HAL_DAC_OUTPUT_LINE2 == cfg->dac_output) {
     tmp = DAC_OUTPUT_LOUT1 | DAC_OUTPUT_ROUT1;
@@ -432,10 +437,8 @@ esp_err_t es8388_config_fmt(es_module_t mode, es_i2s_fmt_t fmt) {
  */
 esp_err_t es8388_set_voice_volume(int volume) {
   esp_err_t res = ESP_OK;
-  
-  reg = audio_codec_get_dac_reg_value(dac_vol_handle, volume);
-  
   uint8_t reg = 0;
+
   reg = audio_codec_get_dac_reg_value(dac_vol_handle, volume);
   res |= es_write_reg(ES8388_ADDR, ES8388_DACCONTROL5, reg);
   res |= es_write_reg(ES8388_ADDR, ES8388_DACCONTROL4, reg);
@@ -443,10 +446,6 @@ esp_err_t es8388_set_voice_volume(int volume) {
            (int)dac_vol_handle->user_volume, reg,
            audio_codec_cal_dac_volume(dac_vol_handle));
 
-//  if (volume < 0)
-//    volume = 0;
-//  else if (volume > 100)
-//    volume = 100;
   /* Audio Settings can be checked here:
    * https://dl.radxa.com/rock2/docs/hw/ds/ES8388%20user%20Guide.pdf
    *
@@ -460,20 +459,20 @@ esp_err_t es8388_set_voice_volume(int volume) {
    */
 
   // restrict range from 0-46 instead of 0-192
-//  int inv_volume = -0.46 * volume + 46;
-//  if (volume == 0) {
-//    // if volume is 0, set to -96dB
-//    inv_volume = 192;
-//  }
-//  res = es_write_reg (ES8388_ADDR, ES8388_DACCONTROL5, inv_volume);
-//  res |= es_write_reg (ES8388_ADDR, ES8388_DACCONTROL4, inv_volume);
+  //  int inv_volume = -0.46 * volume + 46;
+  //  if (volume == 0) {
+  //    // if volume is 0, set to -96dB
+  //    inv_volume = 192;
+  //  }
+  //  res = es_write_reg (ES8388_ADDR, ES8388_DACCONTROL5, inv_volume);
+  //  res |= es_write_reg (ES8388_ADDR, ES8388_DACCONTROL4, inv_volume);
   return res;
 }
 
 esp_err_t es8388_get_voice_volume(int *volume) {
   esp_err_t res = ESP_OK;
   uint8_t reg = 0;
-  
+
   res = es_read_reg(ES8388_DACCONTROL4, &reg);
   if (res == ESP_FAIL) {
     *volume = 0;
@@ -487,19 +486,19 @@ esp_err_t es8388_get_voice_volume(int *volume) {
   }
   ESP_LOGD(ES_TAG, "Get volume:%.2d reg_value:0x%.2x", *volume, reg);
 
-//  else
-//    {
-//      // 0 = 0dB, 192 = -96dB
-//      // max is 0, min is 46
-//      // interpolate to 0-100
-//      if (reg == 192) {
-//        *volume = 0;
-//      }
-//      else {
-//        *volume = -(50/23) * reg + 100;
-//      }
-//    }
-  
+  //  else
+  //    {
+  //      // 0 = 0dB, 192 = -96dB
+  //      // max is 0, min is 46
+  //      // interpolate to 0-100
+  //      if (reg == 192) {
+  //        *volume = 0;
+  //      }
+  //      else {
+  //        *volume = -(50/23) * reg + 100;
+  //      }
+  //    }
+
   return res;
 }
 

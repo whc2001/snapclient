@@ -17,7 +17,7 @@ if(CONFIG_AUDIO_BOARD_CUSTOM)
   endif()
 
   if(CONFIG_DAC_PCM51XX)
-	message(STATUS "Selected DAC is " CONFIG_DAC_PCM15XX)
+	message(STATUS "Selected DAC is " CONFIG_DAC_PCM51XX)
 	list(APPEND COMPONENT_ADD_INCLUDEDIRS ./pcm51xx/include)
 	list(APPEND COMPONENT_SRCS ./pcm51xx/pcm51xx.c)
   endif()
