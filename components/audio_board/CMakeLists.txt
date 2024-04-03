@@ -69,7 +69,7 @@ set(COMPONENT_SRCS
 )
 endif()
 
-#[[
+
 if (CONFIG_ESP32_S2_KALUGA_1_V1_2_BOARD)
 message(STATUS "Current board name is " CONFIG_ESP32_S2_KALUGA_1_V1_2_BOARD)
 list(APPEND COMPONENT_ADD_INCLUDEDIRS ./esp32_s2_kaluga_1_v1_2)
@@ -79,6 +79,7 @@ set(COMPONENT_SRCS
 )
 endif()
 
+#[[
 if (CONFIG_ESP32_S3_KORVO2_V3_BOARD)
 message(STATUS "Current board name is " CONFIG_ESP32_S3_KORVO2_V3_BOARD)
 list(APPEND COMPONENT_ADD_INCLUDEDIRS ./esp32_s3_korvo2_v3)
