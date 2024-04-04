@@ -111,10 +111,12 @@ static bool i2sEnabled = false;
  *
  */
 esp_err_t my_i2s_channel_disable(i2s_chan_handle_t handle) {
-  if (i2sEnabled == true) {
-    i2sEnabled = false;
+  if (tx_chan != NULL) {
+    if (i2sEnabled == true) {
+      i2sEnabled = false;
 
-    return i2s_channel_disable(handle);
+      return i2s_channel_disable(handle);
+    }
   }
 
   return ESP_OK;
@@ -124,10 +126,12 @@ esp_err_t my_i2s_channel_disable(i2s_chan_handle_t handle) {
  *
  */
 esp_err_t my_i2s_channel_enable(i2s_chan_handle_t handle) {
-  if (i2sEnabled == false) {
-    i2sEnabled = true;
+  if (tx_chan != NULL) {
+    if (i2sEnabled == false) {
+      i2sEnabled = true;
 
-    return i2s_channel_enable(handle);
+      return i2s_channel_enable(handle);
+    }
   }
 
   return ESP_OK;
@@ -257,35 +261,35 @@ static esp_err_t player_setup_i2s(i2s_port_t i2sNum,
                                                       I2S_SLOT_MODE_STEREO),
       .gpio_cfg =
           {
-              .mclk = pin_config0
-                          .mck_io_num,  // some codecs may require mclk signal,
-                                        // this example doesn't need it
+              .mclk = pin_config0.mck_io_num,
               .bclk = pin_config0.bck_io_num,
               .ws = pin_config0.ws_io_num,
               .dout = pin_config0.data_out_num,
               .din = pin_config0.data_in_num,
               .invert_flags =
                   {
-                      #if CONFIG_INVERT_MCLK_LEVEL
+#if CONFIG_INVERT_MCLK_LEVEL
                       .mclk_inv = true,
-                      #else
+#else
                       .mclk_inv = false,
-                      #endif
-                      #if CONFIG_INVERT_BCLK_LEVEL
+#endif
+#if CONFIG_INVERT_BCLK_LEVEL
                       .bclk_inv = true,
-                      #else
+#else
                       .bclk_inv = false,
-                      #endif
-                      #if CONFIG_INVERT_WORD_SELECT_LEVEL
+#endif
+#if CONFIG_INVERT_WORD_SELECT_LEVEL
                       .ws_inv = true,
-                      #else
+#else
                       .ws_inv = false,
-                      #endif
+#endif
                   },
           },
   };
 
   ESP_ERROR_CHECK(i2s_channel_init_std_mode(tx_chan, &tx_std_cfg));
+
+  // my_i2s_channel_enable(tx_chan);
 
   return 0;
 }
@@ -376,7 +380,7 @@ int init_player(void) {
   currentSnapcastSetting.sr = 48000;
   currentSnapcastSetting.ch = 2;
   currentSnapcastSetting.bits = 16;
-  currentSnapcastSetting.muted = false;
+  currentSnapcastSetting.muted = true;
   currentSnapcastSetting.volume = 70;
 
   if (snapcastSettingsMux == NULL) {
@@ -387,13 +391,6 @@ int init_player(void) {
   if (playerPcmQueueMux == NULL) {
     playerPcmQueueMux = xSemaphoreCreateMutex();
     xSemaphoreGive(playerPcmQueueMux);
-  }
-
-  ret = player_setup_i2s(I2S_NUM_0, &currentSnapcastSetting);
-  if (ret < 0) {
-    ESP_LOGE(TAG, "player_setup_i2s failed: %d", ret);
-
-    return -1;
   }
 
   // create semaphore for time diff buffer to server
@@ -617,8 +614,8 @@ int32_t get_diff_to_server(int64_t *tDiff) {
   if (xSemaphoreTake(latencyBufSemaphoreHandle, 0) == pdFALSE) {
     *tDiff = lastDiff;
 
-    ESP_LOGW(TAG,
-             "get_diff_to_server: can't take semaphore. Old diff retrieved");
+    // ESP_LOGW(TAG,
+    //          "get_diff_to_server: can't take semaphore. Old diff retrieved");
 
     return -1;
   }
@@ -645,8 +642,9 @@ int32_t server_now(int64_t *sNow, int64_t *diff2Server) {
   now = esp_timer_get_time();
 
   if (get_diff_to_server(&diff) == -1) {
-    ESP_LOGW(TAG,
-             "server_now: can't get current diff to server. Retrieved old one");
+    // ESP_LOGW(TAG,
+    //          "server_now: can't get current diff to server. Retrieved old
+    //          one");
   }
 
   if (diff == 0) {
@@ -1196,7 +1194,7 @@ static void player_task(void *pvParameters) {
   size_t written;
   bool gotSnapserverConfig = false;
   int64_t clientDacLatency_us = 0;
-  int64_t diff2Server;
+  int64_t diff2Server = 0;
   int64_t outputBufferDacTime = 0;
 
   memset(&scSet, 0, sizeof(snapcastSetting_t));
@@ -1491,11 +1489,8 @@ static void player_task(void *pvParameters) {
 
         continue;
       }
-      
-      
-  
+
       const bool enableControlLoop = true;
-     
 
       const int64_t shortOffset = SHORT_OFFSET;  // µs, softsync
       const int64_t miniOffset = MINI_OFFSET;    // µs, softsync
