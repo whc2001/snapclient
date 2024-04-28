@@ -2750,8 +2750,11 @@ void app_main(void) {
   // if enabled these cause a timer srv stack overflow
   esp_log_level_set("HEADPHONE", ESP_LOG_NONE);
   esp_log_level_set("gpio", ESP_LOG_NONE);
-  esp_log_level_set("i2s_std", ESP_LOG_DEBUG);
-  esp_log_level_set("i2s_common", ESP_LOG_DEBUG);
+  //  esp_log_level_set("i2s_std", ESP_LOG_DEBUG);
+  //  esp_log_level_set("i2s_common", ESP_LOG_DEBUG);
+
+  esp_log_level_set("wifi", ESP_LOG_WARN);
+  esp_log_level_set("wifi_init", ESP_LOG_WARN);
 
 #if CONFIG_SNAPCLIENT_ENABLE_ETHERNET
   // clang-format off

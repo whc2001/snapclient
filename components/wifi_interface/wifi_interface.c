@@ -10,7 +10,9 @@
 #include "esp_event.h"
 #include "esp_log.h"
 #include "esp_mac.h"
+#include "esp_timer.h"
 #include "esp_wifi.h"
+#include "nvs_flash.h"
 
 #if ENABLE_WIFI_PROVISIONING
 #include <string.h>  // for memcpy
@@ -25,6 +27,8 @@ static const char *provSsid = CONFIG_WIFI_PROVISIONING_SSID;
 
 static const char *TAG = "WIFI";
 
+static void reset_reason_timer_counter_cb(void *);
+
 static char mac_address[18];
 
 EventGroupHandle_t s_wifi_event_group;
@@ -33,6 +37,36 @@ static int s_retry_num = 0;
 static wifi_config_t wifi_config;
 
 static esp_netif_t *esp_wifi_netif = NULL;
+
+static esp_timer_handle_t resetReasonTimerHandle = NULL;
+static const esp_timer_create_args_t resetReasonTimerArgs = {
+    .callback = &reset_reason_timer_counter_cb,
+    .dispatch_method = ESP_TIMER_TASK,
+    .name = "rstCnt",
+    .skip_unhandled_events = false};
+
+static uint8_t resetReasonCounter = 0;
+
+static void reset_reason_timer_counter_cb(void *args) {
+  nvs_handle_t nvs_handle;
+  esp_err_t err = nvs_open("storage", NVS_READWRITE, &nvs_handle);
+  if (err != ESP_OK) {
+    ESP_LOGE(TAG, "%s: Error (%s) opening NVS handle!", __func__,
+             esp_err_to_name(err));
+  } else {
+    ESP_LOGI(TAG, "resetting POR reset counter ...");
+
+    resetReasonCounter = 0;
+
+    err |= nvs_set_u8(nvs_handle, "restart_counter", resetReasonCounter);
+    err |= nvs_commit(nvs_handle);
+    ESP_LOGI(TAG, "%s", (err != ESP_OK) ? "Failed!" : "Done");
+
+    nvs_close(nvs_handle);
+  }
+
+  esp_timer_delete(resetReasonTimerHandle);
+}
 
 /* FreeRTOS event group to signal when we are connected & ready to make a
  * request */
@@ -165,6 +199,43 @@ void wifi_init(void) {
   // Initialize provisioning manager with the
   // configuration parameters set above
   ESP_ERROR_CHECK(wifi_prov_mgr_init(config));
+
+  esp_reset_reason_t resetReason = esp_reset_reason();
+  ESP_LOGI(TAG, "reset reason was: %d", resetReason);
+  esp_timer_create(&resetReasonTimerArgs, &resetReasonTimerHandle);
+  esp_timer_start_once(resetReasonTimerHandle, 5000000);
+  if (resetReason == ESP_RST_POWERON) {
+    nvs_handle_t nvs_handle;
+    esp_err_t err = nvs_open("storage", NVS_READWRITE, &nvs_handle);
+    if (err != ESP_OK) {
+      ESP_LOGE(TAG, "%s: Error (%s) opening NVS handle!", __func__,
+               esp_err_to_name(err));
+    } else {
+      ESP_LOGI(TAG, "get POR reset counter ...");
+      err |= nvs_get_u8(nvs_handle, "restart_counter", &resetReasonCounter);
+
+      ESP_LOGE(TAG, "counter %d", resetReasonCounter);
+
+      resetReasonCounter++;
+
+      if (resetReasonCounter > 3) {
+        ESP_LOGW(TAG, "resetting WIFI credentials!");
+
+        resetReasonCounter = 0;
+
+        wifi_prov_mgr_reset_provisioning();
+
+        esp_timer_stop(resetReasonTimerHandle);
+        esp_timer_delete(resetReasonTimerHandle);
+      }
+
+      err |= nvs_set_u8(nvs_handle, "restart_counter", resetReasonCounter);
+      err |= nvs_commit(nvs_handle);
+      ESP_LOGI(TAG, "%s", (err != ESP_OK) ? "Failed!" : "Done");
+
+      nvs_close(nvs_handle);
+    }
+  }
 
   bool provisioned = false;
   /* Let's find out if the device is provisioned */
