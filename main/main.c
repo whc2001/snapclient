@@ -25,6 +25,8 @@
 #include "wifi_interface.h"
 
 // Minimum ESP-IDF stuff only hardware abstraction stuff
+#include <wifi_provisioning.h>
+
 #include "board.h"
 #include "es8388.h"
 #include "esp_netif.h"
@@ -80,7 +82,7 @@ static QueueHandle_t decoderTaskQHdl = NULL;
 SemaphoreHandle_t decoderReadSemaphore = NULL;
 SemaphoreHandle_t decoderWriteSemaphore = NULL;
 
-const char *VERSION_STRING = "0.0.2";
+const char *VERSION_STRING = "0.0.3";
 
 #define HTTP_TASK_PRIORITY (configMAX_PRIORITIES - 2)  // 9
 #define HTTP_TASK_CORE_ID 1                            // 1  // tskNO_AFFINITY
@@ -2744,17 +2746,17 @@ void app_main(void) {
   }
   ESP_ERROR_CHECK(ret);
 
-  esp_log_level_set("*", ESP_LOG_INFO);
-  //  esp_log_level_set("c_I2S", ESP_LOG_NONE);
-
-  // if enabled these cause a timer srv stack overflow
-  esp_log_level_set("HEADPHONE", ESP_LOG_NONE);
-  esp_log_level_set("gpio", ESP_LOG_NONE);
-  //  esp_log_level_set("i2s_std", ESP_LOG_DEBUG);
-  //  esp_log_level_set("i2s_common", ESP_LOG_DEBUG);
-
-  esp_log_level_set("wifi", ESP_LOG_WARN);
-  esp_log_level_set("wifi_init", ESP_LOG_WARN);
+  //  esp_log_level_set("*", ESP_LOG_INFO);
+  //  //  esp_log_level_set("c_I2S", ESP_LOG_NONE);
+  //
+  //  // if enabled these cause a timer srv stack overflow
+  //  esp_log_level_set("HEADPHONE", ESP_LOG_NONE);
+  //  //esp_log_level_set("gpio", ESP_LOG_NONE);
+  //  //  esp_log_level_set("i2s_std", ESP_LOG_DEBUG);
+  //  //  esp_log_level_set("i2s_common", ESP_LOG_DEBUG);
+  //
+  //  esp_log_level_set("wifi", ESP_LOG_WARN);
+  //  esp_log_level_set("wifi_init", ESP_LOG_WARN);
 
 #if CONFIG_SNAPCLIENT_ENABLE_ETHERNET
   // clang-format off
