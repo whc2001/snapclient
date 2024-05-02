@@ -18,9 +18,7 @@
 #include <string.h>  // for memcpy
 #include <wifi_provisioning/manager.h>
 #include <wifi_provisioning/scheme_softap.h>
-#endif
 
-#if ENABLE_WIFI_PROVISIONING
 static const char *provPwd = CONFIG_WIFI_PROVISIONING_PASSWORD;
 static const char *provSsid = CONFIG_WIFI_PROVISIONING_SSID;
 #endif
@@ -34,9 +32,11 @@ static char mac_address[18];
 EventGroupHandle_t s_wifi_event_group;
 
 static int s_retry_num = 0;
-static wifi_config_t wifi_config;
 
 static esp_netif_t *esp_wifi_netif = NULL;
+
+#if ENABLE_WIFI_PROVISIONING
+static wifi_config_t wifi_config;
 
 static esp_timer_handle_t resetReasonTimerHandle = NULL;
 static const esp_timer_create_args_t resetReasonTimerArgs = {
@@ -67,6 +67,7 @@ static void reset_reason_timer_counter_cb(void *args) {
 
   esp_timer_delete(resetReasonTimerHandle);
 }
+#endif
 
 /* FreeRTOS event group to signal when we are connected & ready to make a
  * request */
