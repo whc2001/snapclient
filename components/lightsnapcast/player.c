@@ -1494,7 +1494,7 @@ static void player_task(void *pvParameters) {
 
       const int64_t shortOffset = SHORT_OFFSET;  // µs, softsync
       const int64_t miniOffset = MINI_OFFSET;    // µs, softsync
-      const int64_t hardResyncThreshold = 1000;  // µs, hard sync
+      const int64_t hardResyncThreshold = 5000;  // µs, hard sync
 
       if (initialSync == 1) {
         avg = age;

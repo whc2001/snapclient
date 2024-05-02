@@ -279,6 +279,16 @@
 			<location>/home/karl/espressif/esp-idf-v5.1.1/components/esp_pm/pm_trace.c</location>
 		</link>
 		<link>
+			<name>build/ide/esp_idf_components/esp_psram/esp_psram.c</name>
+			<type>1</type>
+			<location>/home/karl/espressif/esp-idf-v5.1.1/components/esp_psram/esp_psram.c</location>
+		</link>
+		<link>
+			<name>build/ide/esp_idf_components/esp_psram/mmu_psram_flash.c</name>
+			<type>1</type>
+			<location>/home/karl/espressif/esp-idf-v5.1.1/components/esp_psram/mmu_psram_flash.c</location>
+		</link>
+		<link>
 			<name>build/ide/esp_idf_components/esp_ringbuf/ringbuf.c</name>
 			<type>1</type>
 			<location>/home/karl/espressif/esp-idf-v5.1.1/components/esp_ringbuf/ringbuf.c</location>
@@ -1632,6 +1642,21 @@
 			<name>build/ide/esp_idf_components/esp_phy/src/phy_override.c</name>
 			<type>1</type>
 			<location>/home/karl/espressif/esp-idf-v5.1.1/components/esp_phy/src/phy_override.c</location>
+		</link>
+		<link>
+			<name>build/ide/esp_idf_components/esp_psram/esp32/esp_himem.c</name>
+			<type>1</type>
+			<location>/home/karl/espressif/esp-idf-v5.1.1/components/esp_psram/esp32/esp_himem.c</location>
+		</link>
+		<link>
+			<name>build/ide/esp_idf_components/esp_psram/esp32/esp_psram_extram_cache.c</name>
+			<type>1</type>
+			<location>/home/karl/espressif/esp-idf-v5.1.1/components/esp_psram/esp32/esp_psram_extram_cache.c</location>
+		</link>
+		<link>
+			<name>build/ide/esp_idf_components/esp_psram/esp32/esp_psram_impl_quad.c</name>
+			<type>1</type>
+			<location>/home/karl/espressif/esp-idf-v5.1.1/components/esp_psram/esp32/esp_psram_impl_quad.c</location>
 		</link>
 		<link>
 			<name>build/ide/esp_idf_components/esp_rom/patches/esp_rom_crc.c</name>
