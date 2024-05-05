@@ -210,11 +210,17 @@ void improv_wifi_get_local_ip(uint8_t *address) {
 }
 
 void improv_init(void) {
+  uint8_t webPortStr[6] = {0};
+  uint16_t webPort = CONFIG_WEB_PORT;
+  uint8_t urlStr[26] = "http://{LOCAL_IPV4}:";
+
+  utoa(webPort, (char *)webPortStr, 10);
+  strcat((char *)urlStr, (char *)webPortStr);
+
   improv_wifi_create();
   improv_wifi_serialWrite(uart_write);
-  improv_wifi_set_device_info(
-      CF_ESP32, "esp32_snapclient", "0.0.3", "snapclient",
-      "http://{LOCAL_IPV4}:8000");  //"http://192.168.1.131:8000/");
+  improv_wifi_set_device_info(CF_ESP32, "esp32_snapclient", "0.0.3",
+                              "snapclient", (const char *)urlStr);
 
   improv_wifi_setCustomConnectWiFi(improv_wifi_connect);
   improv_wifi_setCustomScanWiFi(improv_wifi_scan);

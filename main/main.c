@@ -2746,17 +2746,17 @@ void app_main(void) {
   }
   ESP_ERROR_CHECK(ret);
 
-  //  esp_log_level_set("*", ESP_LOG_INFO);
-  //  //  esp_log_level_set("c_I2S", ESP_LOG_NONE);
-  //
-  //  // if enabled these cause a timer srv stack overflow
-  //  esp_log_level_set("HEADPHONE", ESP_LOG_NONE);
-  //  //esp_log_level_set("gpio", ESP_LOG_NONE);
-  //  //  esp_log_level_set("i2s_std", ESP_LOG_DEBUG);
-  //  //  esp_log_level_set("i2s_common", ESP_LOG_DEBUG);
-  //
-  //  esp_log_level_set("wifi", ESP_LOG_WARN);
-  //  esp_log_level_set("wifi_init", ESP_LOG_WARN);
+  esp_log_level_set("*", ESP_LOG_INFO);
+
+  // if enabled these cause a timer srv stack overflow
+  esp_log_level_set("HEADPHONE", ESP_LOG_NONE);
+  esp_log_level_set("gpio", ESP_LOG_WARN);
+  esp_log_level_set("uart", ESP_LOG_WARN);
+  // esp_log_level_set("i2s_std", ESP_LOG_DEBUG);
+  // esp_log_level_set("i2s_common", ESP_LOG_DEBUG);
+
+  esp_log_level_set("wifi", ESP_LOG_WARN);
+  esp_log_level_set("wifi_init", ESP_LOG_WARN);
 
 #if CONFIG_SNAPCLIENT_ENABLE_ETHERNET
   // clang-format off
@@ -2867,8 +2867,7 @@ void app_main(void) {
     gpio_config_t gpioCfg = {
         .pin_bit_mask =
             BIT64(pin_config0.mck_io_num) | BIT64(pin_config0.data_out_num) |
-            BIT64(pin_config0.bck_io_num) | BIT64(pin_config0.ws_io_num) |
-            BIT64(pin_config0.data_in_num),
+            BIT64(pin_config0.bck_io_num) | BIT64(pin_config0.ws_io_num),
         .mode = GPIO_MODE_OUTPUT,
         .pull_up_en = GPIO_PULLUP_DISABLE,
         .pull_down_en = GPIO_PULLDOWN_DISABLE,
@@ -2877,9 +2876,13 @@ void app_main(void) {
     gpio_config(&gpioCfg);
     gpio_set_level(pin_config0.mck_io_num, 0);
     gpio_set_level(pin_config0.data_out_num, 0);
-    gpio_set_level(pin_config0.data_in_num, 0);
     gpio_set_level(pin_config0.bck_io_num, 0);
     gpio_set_level(pin_config0.ws_io_num, 0);
+
+    gpioCfg.pin_bit_mask = BIT64(pin_config0.data_in_num);
+    gpioCfg.mode = GPIO_MODE_INPUT;
+    gpioCfg.pull_up_en = GPIO_PULLUP_ENABLE;
+    gpio_config(&gpioCfg);
   }
 
 #if CONFIG_SNAPCLIENT_ENABLE_ETHERNET

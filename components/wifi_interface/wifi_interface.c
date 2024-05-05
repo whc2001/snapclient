@@ -34,6 +34,7 @@ static int s_retry_num = 0;
 
 static esp_netif_t *esp_wifi_netif = NULL;
 
+#if ENABLE_WIFI_PROVISIONING
 static esp_timer_handle_t resetReasonTimerHandle = NULL;
 static const esp_timer_create_args_t resetReasonTimerArgs = {
     .callback = &reset_reason_timer_counter_cb,
@@ -63,6 +64,7 @@ static void reset_reason_timer_counter_cb(void *args) {
 
   esp_timer_delete(resetReasonTimerHandle);
 }
+#endif
 
 /* The event group allows multiple bits for each event,
    but we only care about one event - are we connected
@@ -135,7 +137,7 @@ void wifi_init(void) {
       ESP_LOGI(TAG, "get POR reset counter ...");
       err |= nvs_get_u8(nvs_handle, "restart_counter", &resetReasonCounter);
 
-      ESP_LOGE(TAG, "counter %d", resetReasonCounter);
+      ESP_LOGI(TAG, "reset counter %d", resetReasonCounter);
 
       resetReasonCounter++;
 
@@ -173,28 +175,16 @@ void wifi_init(void) {
 
   ESP_ERROR_CHECK(esp_wifi_start());
 
-  bool provisioned = false;
-  if ((strlen((const char *)wifi_config.sta.ssid) > 0) &&
-      (strlen((const char *)wifi_config.sta.password) > 0)) {
-    provisioned = true;
-  }
+  ESP_LOGI(TAG, "Starting provisioning");
 
-  ESP_LOGI(TAG, "ssid %s, password %s", wifi_config.sta.ssid,
-           wifi_config.sta.password);
-
-  /* If device is not yet provisioned start provisioning service */
-  if (!provisioned) {
-    ESP_LOGI(TAG, "Starting provisioning");
-
-    //    esp_log_level_set("*", ESP_LOG_NONE);
-    improv_init();
-  }
+  improv_init();
 #else
   wifi_config_t wifi_config = {
       .sta =
           {
               .ssid = WIFI_SSID,
               .password = WIFI_PASSWORD,
+              .sort_method = WIFI_CONNECT_AP_BY_SIGNAL,
               .threshold.authmode = WIFI_AUTH_WPA2_PSK,
               .pmf_cfg = {.capable = true, .required = false},
           },
@@ -214,19 +204,6 @@ void wifi_init(void) {
   EventBits_t bits = xEventGroupWaitBits(s_wifi_event_group,
                                          WIFI_CONNECTED_BIT | WIFI_FAIL_BIT,
                                          pdFALSE, pdFALSE, portMAX_DELAY);
-
-  // TODO: find a better way to do this
-  //       it is needed to give provisioning task enough time
-  //	   to retrieve correct IP, better use the event system in provision
-  // manger 	   or a blocking semaphore here to wait until it is done
-  vTaskDelay(pdMS_TO_TICKS(3000));
-
-  improv_deinit();
-  esp_log_level_set("*", ESP_LOG_INFO);
-
-  //  uint8_t addr[4];
-  //  improv_wifi_get_local_ip(addr);
-  //  ESP_LOGI(TAG, "%d.%d.%d.%d", addr[0], addr[1], addr[2], addr[3]);
 
   /* xEventGroupWaitBits() returns the bits before the call returned, hence we
    * can test which event actually happened. */
