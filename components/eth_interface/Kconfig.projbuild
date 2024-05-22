@@ -75,7 +75,7 @@ menu "Snapclient Ethernet Configuration"
         config SNAPCLIENT_ETH_PHY_RST_GPIO
             int "PHY Reset GPIO number"
             range -1 ENV_GPIO_OUT_RANGE_MAX
-            default 5
+            default 17
             help
                 Set the GPIO number used to reset PHY chip.
                 Set to -1 to disable PHY chip hardware reset.
@@ -83,7 +83,7 @@ menu "Snapclient Ethernet Configuration"
         config SNAPCLIENT_ETH_PHY_ADDR
             int "PHY Address"
             range 0 31
-            default 1
+            default 0
             help
                 Set PHY address according your board schematic.
     endif # SNAPCLIENT_USE_INTERNAL_ETHERNET

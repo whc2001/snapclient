@@ -17,7 +17,8 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/event_groups.h"
 #include "freertos/task.h"
-#if CONFIG_SNAPCLIENT_ENABLE_ETHERNET
+#if CONFIG_SNAPCLIENT_USE_INTERNAL_ETHERNET || \
+    CONFIG_SNAPCLIENT_USE_SPI_ETHERNET
 #include "eth_interface.h"
 #endif
 
@@ -2880,7 +2881,8 @@ void app_main(void) {
     gpio_set_level(pin_config0.ws_io_num, 0);
   }
 
-#if SNAPCLIENT_USE_INTERNAL_ETHERNET || CONFIG_SNAPCLIENT_USE_SPI_ETHERNET
+#if CONFIG_SNAPCLIENT_USE_INTERNAL_ETHERNET || \
+    CONFIG_SNAPCLIENT_USE_SPI_ETHERNET
   eth_init();
   // pass "WIFI_STA_DEF", "WIFI_AP_DEF", "ETH_DEF"
   init_http_server_task("ETH_DEF");

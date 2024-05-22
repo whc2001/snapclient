@@ -5,10 +5,18 @@
  */
 #include "eth_interface.h"
 
+#include <stdio.h>
+#include <string.h>
+
 #include "driver/gpio.h"
 #include "esp_check.h"
+#include "esp_eth.h"
+#include "esp_event.h"
 #include "esp_log.h"
 #include "esp_mac.h"
+#include "esp_netif.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 #include "sdkconfig.h"
 #if CONFIG_SNAPCLIENT_USE_SPI_ETHERNET
 #include "driver/spi_master.h"
@@ -360,7 +368,6 @@ static void got_ip_event_handler(void *arg, esp_event_base_t event_base,
 
 /** Init function that exposes to the main application */
 void eth_init(void) {
-#error HERE!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
   // Initialize Ethernet driver
   uint8_t eth_port_cnt = 0;
   esp_eth_handle_t *eth_handles;
