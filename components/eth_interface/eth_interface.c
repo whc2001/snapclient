@@ -16,6 +16,7 @@
 #include "esp_mac.h"
 #include "esp_netif.h"
 #include "freertos/FreeRTOS.h"
+#include "freertos/event_groups.h"
 #include "freertos/task.h"
 #include "sdkconfig.h"
 #if CONFIG_SNAPCLIENT_USE_SPI_ETHERNET
@@ -23,6 +24,16 @@
 #endif
 
 static const char *TAG = "snapclient_eth_init";
+
+
+/* The event group allows multiple bits for each event, but we only care about
+ * two events:
+ * - we are connected to the AP with an IP
+ * - we failed to connect after the maximum amount of retries */
+#define ETH_CONNECTED_BIT BIT0
+#define ETH_FAIL_BIT BIT1
+
+static EventGroupHandle_t s_eth_event_group;
 
 #if CONFIG_SNAPCLIENT_SPI_ETHERNETS_NUM
 #define SPI_ETHERNETS_NUM CONFIG_SNAPCLIENT_SPI_ETHERNETS_NUM
@@ -76,11 +87,13 @@ static esp_eth_handle_t eth_init_internal(esp_eth_mac_t **mac_out,
   // Update PHY config based on board specific configuration
   phy_config.phy_addr = CONFIG_SNAPCLIENT_ETH_PHY_ADDR;
   phy_config.reset_gpio_num = CONFIG_SNAPCLIENT_ETH_PHY_RST_GPIO;
+
   // Init vendor specific MAC config to default
   eth_esp32_emac_config_t esp32_emac_config = ETH_ESP32_EMAC_DEFAULT_CONFIG();
   // Update vendor specific MAC config based on board configuration
   esp32_emac_config.smi_mdc_gpio_num = CONFIG_SNAPCLIENT_ETH_MDC_GPIO;
   esp32_emac_config.smi_mdio_gpio_num = CONFIG_SNAPCLIENT_ETH_MDIO_GPIO;
+
   // Set clock mode and GPIO
 #if CONFIG_ETH_RMII_CLK_INPUT
   esp32_emac_config.clock_config.rmii.clock_mode = EMAC_CLK_EXT_IN;
@@ -352,6 +365,7 @@ static void eth_event_handler(void *arg, esp_event_base_t event_base,
       break;
     case ETHERNET_EVENT_DISCONNECTED:
       ESP_LOGI(TAG, "Ethernet Link Down");
+      xEventGroupSetBits(s_eth_event_group, ETH_FAIL_BIT);
       break;
     case ETHERNET_EVENT_START:
       ESP_LOGI(TAG, "Ethernet Started");
@@ -376,6 +390,8 @@ static void got_ip_event_handler(void *arg, esp_event_base_t event_base,
   ESP_LOGI(TAG, "ETHMASK:" IPSTR, IP2STR(&ip_info->netmask));
   ESP_LOGI(TAG, "ETHGW:" IPSTR, IP2STR(&ip_info->gw));
   ESP_LOGI(TAG, "~~~~~~~~~~~");
+
+  xEventGroupSetBits(s_eth_event_group, ETH_CONNECTED_BIT);
 }
 
 /** Init function that exposes to the main application */
@@ -436,4 +452,12 @@ void eth_init(void) {
   for (int i = 0; i < eth_port_cnt; i++) {
     ESP_ERROR_CHECK(esp_eth_start(eth_handles[i]));
   }
+
+  /* Waiting until either the connection is established (ETH_CONNECTED_BIT) or
+   * connection failed for the maximum number of re-tries (ETH_FAIL_BIT). The
+   * bits are set by event_handler() (see above) */
+  s_eth_event_group = xEventGroupCreate();
+  //    EventBits_t bits =
+  xEventGroupWaitBits(s_eth_event_group, ETH_CONNECTED_BIT, pdFALSE, pdFALSE,
+                      portMAX_DELAY);
 }
