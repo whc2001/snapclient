@@ -903,7 +903,8 @@ static void http_get_task(void *pvParameters) {
     char mac_address[18];
     uint8_t base_mac[6];
     // Get MAC address for WiFi station
-#if CONFIG_SNAPCLIENT_ENABLE_ETHERNET
+#if CONFIG_SNAPCLIENT_USE_INTERNAL_ETHERNET || \
+    CONFIG_SNAPCLIENT_USE_SPI_ETHERNET
     esp_read_mac(base_mac, ESP_MAC_ETH);
 #else
     esp_read_mac(base_mac, ESP_MAC_WIFI_STA);
@@ -2757,7 +2758,8 @@ void app_main(void) {
   esp_log_level_set("wifi", ESP_LOG_WARN);
   esp_log_level_set("wifi_init", ESP_LOG_WARN);
 
-#if CONFIG_SNAPCLIENT_ENABLE_ETHERNET
+#if CONFIG_SNAPCLIENT_USE_INTERNAL_ETHERNET || \
+    CONFIG_SNAPCLIENT_USE_SPI_ETHERNET
   // clang-format off
   // nINT/REFCLKO Function Select Configuration Strap
   //  • When nINTSEL is floated or pulled to
