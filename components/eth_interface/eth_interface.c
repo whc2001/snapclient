@@ -249,7 +249,7 @@ err:
 #endif  // CONFIG_SNAPCLIENT_USE_SPI_ETHERNET
 
 /** Original init function in the example */
-esp_err_t internal_eth_init(esp_eth_handle_t *eth_handles_out[],
+esp_err_t original_eth_init(esp_eth_handle_t *eth_handles_out[],
                             uint8_t *eth_cnt_out) {
   esp_err_t ret = ESP_OK;
   esp_eth_handle_t *eth_handles = NULL;
@@ -371,7 +371,7 @@ void eth_init(void) {
   // Initialize Ethernet driver
   uint8_t eth_port_cnt = 0;
   esp_eth_handle_t *eth_handles;
-  ESP_ERROR_CHECK(internal_eth_init(&eth_handles, &eth_port_cnt));
+  ESP_ERROR_CHECK(original_eth_init(&eth_handles, &eth_port_cnt));
 
   // Initialize TCP/IP network interface aka the esp-netif (should be called
   // only once in application)
