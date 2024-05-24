@@ -93,11 +93,20 @@ static esp_eth_handle_t eth_init_internal(esp_eth_mac_t **mac_out,
   // Update vendor specific MAC config based on board configuration
   esp32_emac_config.smi_mdc_gpio_num = CONFIG_SNAPCLIENT_ETH_MDC_GPIO;
   esp32_emac_config.smi_mdio_gpio_num = CONFIG_SNAPCLIENT_ETH_MDIO_GPIO;
+
+  // Set clock mode and GPIO
+#if CONFIG_ETH_RMII_CLK_INPUT
   esp32_emac_config.clock_config.rmii.clock_mode = EMAC_CLK_EXT_IN;
-  esp32_emac_config.clock_config.rmii.clock_gpio = 0;
+#elif CONFIG_ETH_RMII_CLK_OUTPUT
+  esp32_emac_config.clock_config.rmii.clock_mode = EMAC_CLK_EXT_OUT;
+#else
+  esp32_emac_config.clock_config.rmii.clock_mode = EMAC_CLK_DEFAULT;
+#endif
+  esp32_emac_config.clock_config.rmii.clock_gpio = CONFIG_ETH_RMII_CLK_IN_GPIO;
 
   // Create new ESP32 Ethernet MAC instance
   esp_eth_mac_t *mac = esp_eth_mac_new_esp32(&esp32_emac_config, &mac_config);
+
   // Create new PHY instance based on board configuration
 #if CONFIG_SNAPCLIENT_ETH_PHY_IP101
   esp_eth_phy_t *phy = esp_eth_phy_new_ip101(&phy_config);
@@ -110,6 +119,7 @@ static esp_eth_handle_t eth_init_internal(esp_eth_mac_t **mac_out,
 #elif CONFIG_SNAPCLIENT_ETH_PHY_KSZ80XX
   esp_eth_phy_t *phy = esp_eth_phy_new_ksz80xx(&phy_config);
 #endif
+
   // Init Ethernet driver to default and install it
   esp_eth_handle_t eth_handle = NULL;
   esp_eth_config_t config = ETH_DEFAULT_CONFIG(mac, phy);
@@ -264,7 +274,7 @@ err:
 #endif  // CONFIG_SNAPCLIENT_USE_SPI_ETHERNET
 
 /** Original init function in the example */
-esp_err_t internal_eth_init(esp_eth_handle_t *eth_handles_out[],
+esp_err_t original_eth_init(esp_eth_handle_t *eth_handles_out[],
                             uint8_t *eth_cnt_out) {
   esp_err_t ret = ESP_OK;
   esp_eth_handle_t *eth_handles = NULL;
@@ -389,7 +399,7 @@ void eth_init(void) {
   // Initialize Ethernet driver
   uint8_t eth_port_cnt = 0;
   esp_eth_handle_t *eth_handles;
-  ESP_ERROR_CHECK(internal_eth_init(&eth_handles, &eth_port_cnt));
+  ESP_ERROR_CHECK(original_eth_init(&eth_handles, &eth_port_cnt));
 
   // Initialize TCP/IP network interface aka the esp-netif (should be called
   // only once in application)
