@@ -18,13 +18,13 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/event_groups.h"
 #include "freertos/task.h"
+#include "lwip/ip4_addr.h"
 #include "sdkconfig.h"
 #if CONFIG_SNAPCLIENT_USE_SPI_ETHERNET
 #include "driver/spi_master.h"
 #endif
 
 static const char *TAG = "snapclient_eth_init";
-
 
 /* The event group allows multiple bits for each event, but we only care about
  * two events:
@@ -33,6 +33,7 @@ static const char *TAG = "snapclient_eth_init";
 #define ETH_CONNECTED_BIT BIT0
 #define ETH_FAIL_BIT BIT1
 
+static bool connected = false, got_ip = false;
 static EventGroupHandle_t s_eth_event_group;
 
 #if CONFIG_SNAPCLIENT_SPI_ETHERNETS_NUM
@@ -65,6 +66,16 @@ typedef struct {
   uint8_t phy_addr;
   uint8_t *mac_addr;
 } spi_eth_module_config_t;
+
+static void set_eth_events() {
+  if (connected && got_ip) {
+    xEventGroupSetBits(s_eth_event_group, ETH_CONNECTED_BIT);
+    xEventGroupClearBits(s_eth_event_group, ETH_FAIL_BIT);
+  } else if (!connected) {
+    xEventGroupSetBits(s_eth_event_group, ETH_FAIL_BIT);
+    xEventGroupClearBits(s_eth_event_group, ETH_CONNECTED_BIT);
+  }
+}
 
 #if CONFIG_SNAPCLIENT_USE_INTERNAL_ETHERNET
 /**
@@ -362,10 +373,13 @@ static void eth_event_handler(void *arg, esp_event_base_t event_base,
       ESP_LOGI(TAG, "Ethernet HW Addr %02x:%02x:%02x:%02x:%02x:%02x",
                mac_addr[0], mac_addr[1], mac_addr[2], mac_addr[3], mac_addr[4],
                mac_addr[5]);
+      connected = true;
+      set_eth_events();
       break;
     case ETHERNET_EVENT_DISCONNECTED:
       ESP_LOGI(TAG, "Ethernet Link Down");
-      xEventGroupSetBits(s_eth_event_group, ETH_FAIL_BIT);
+      connected = false;
+      set_eth_events();
       break;
     case ETHERNET_EVENT_START:
       ESP_LOGI(TAG, "Ethernet Started");
@@ -391,11 +405,14 @@ static void got_ip_event_handler(void *arg, esp_event_base_t event_base,
   ESP_LOGI(TAG, "ETHGW:" IPSTR, IP2STR(&ip_info->gw));
   ESP_LOGI(TAG, "~~~~~~~~~~~");
 
-  xEventGroupSetBits(s_eth_event_group, ETH_CONNECTED_BIT);
+  got_ip = true;
+  set_eth_events();
 }
 
 /** Init function that exposes to the main application */
 void eth_init(void) {
+  s_eth_event_group = xEventGroupCreate();
+
   // Initialize Ethernet driver
   uint8_t eth_port_cnt = 0;
   esp_eth_handle_t *eth_handles;
@@ -416,6 +433,18 @@ void eth_init(void) {
     // Attach Ethernet driver to TCP/IP stack
     ESP_ERROR_CHECK(
         esp_netif_attach(eth_netif, esp_eth_new_netif_glue(eth_handles[0])));
+
+#if CONFIG_SNAPCLIENT_ETH_USE_STATIC_CONF
+    // Use static configuration instead of DHCP
+    esp_netif_ip_info_t info_t;
+    memset(&info_t, 0, sizeof(esp_netif_ip_info_t));
+    ip4addr_aton(CONFIG_SNAPCLIENT_ETH_STATIC_IP, &info_t.ip);
+    ip4addr_aton(CONFIG_SNAPCLIENT_ETH_STATIC_GATEWAY, &info_t.gw);
+    ip4addr_aton(CONFIG_SNAPCLIENT_ETH_STATIC_NETMASK, &info_t.netmask);
+    esp_netif_dhcpc_stop(eth_netif);
+    esp_netif_set_ip_info(eth_netif, &info_t);
+#endif
+
   } else {
     // Use ESP_NETIF_INHERENT_DEFAULT_ETH when multiple Ethernet interfaces are
     // used and so you need to modify esp-netif configuration parameters for
@@ -456,8 +485,6 @@ void eth_init(void) {
   /* Waiting until either the connection is established (ETH_CONNECTED_BIT) or
    * connection failed for the maximum number of re-tries (ETH_FAIL_BIT). The
    * bits are set by event_handler() (see above) */
-  s_eth_event_group = xEventGroupCreate();
-  //    EventBits_t bits =
   xEventGroupWaitBits(s_eth_event_group, ETH_CONNECTED_BIT, pdFALSE, pdFALSE,
                       portMAX_DELAY);
 }

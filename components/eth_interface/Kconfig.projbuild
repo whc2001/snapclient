@@ -247,19 +247,49 @@ menu "Snapclient Ethernet Configuration"
                 Set the second SPI Ethernet module PHY address according your board schematic.
     endif # SNAPCLIENT_USE_SPI_ETHERNET
 
+    # Clock enable GPIO
     config SNAPCLIENT_ETH_CLOCK_ENABLE_GPIO
         depends on SNAPCLIENT_USE_INTERNAL_ETHERNET || SNAPCLIENT_USE_SPI_ETHERNET
-        int "PHY Clock Enable GPIO"
+        int "PHY clock enable GPIO"
         default 5
         help
             GPIO number to control ethernet PHY's clock.
             Some PHY may have constant clock output even during reset, which might cause boot failure when using clock input
-            mode with GPIO0. This GPIO will be configured after boot. 
+            mode with GPIO0. This GPIO will be configured after boot.
 
     config SNAPCLIENT_ETH_CLOCK_ENABLE_ACTIVE_LOW
         depends on SNAPCLIENT_USE_INTERNAL_ETHERNET || SNAPCLIENT_USE_SPI_ETHERNET
-        bool "PHY Clock Enable active LOW"
+        bool "PHY clock enable GPIO active LOW"
         default false
         help
             Output LOW instead of HIGH on eithernet PHY clock enable pin for enable state.
+
+    # Static configuration
+    config SNAPCLIENT_ETH_USE_STATIC_CONF
+        depends on SNAPCLIENT_USE_INTERNAL_ETHERNET || SNAPCLIENT_USE_SPI_ETHERNET
+        bool "Use static ethernet configuration"
+        default false
+        help
+            Use static configuration instead of DHCP for ethernet. Currently this only works with internal PHY with a single interface.
+
+    config SNAPCLIENT_ETH_STATIC_IP
+        depends on SNAPCLIENT_ETH_USE_STATIC_CONF
+        string "IP address"
+        default "192.168.1.123"
+        help
+            Set the static IP address for the ethernet interface.
+
+    config SNAPCLIENT_ETH_STATIC_NETMASK
+        depends on SNAPCLIENT_ETH_USE_STATIC_CONF
+        string "Netmask"
+        default "255.255.255.0"
+        help
+            Set the static netmask for the ethernet interface.
+
+    config SNAPCLIENT_ETH_STATIC_GATEWAY
+        depends on SNAPCLIENT_ETH_USE_STATIC_CONF
+        string "Gateway"
+        default "192.168.1.1"
+        help
+            Set the static gateway for the ethernet interface.
 endmenu
