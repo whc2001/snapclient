@@ -246,4 +246,20 @@ menu "Snapclient Ethernet Configuration"
             help
                 Set the second SPI Ethernet module PHY address according your board schematic.
     endif # SNAPCLIENT_USE_SPI_ETHERNET
+
+    config SNAPCLIENT_ETH_CLOCK_ENABLE_GPIO
+        depends on SNAPCLIENT_USE_INTERNAL_ETHERNET || SNAPCLIENT_USE_SPI_ETHERNET
+        int "PHY Clock Enable GPIO"
+        default 5
+        help
+            GPIO number to control ethernet PHY's clock.
+            Some PHY may have constant clock output even during reset, which might cause boot failure when using clock input
+            mode with GPIO0. This GPIO will be configured after boot. 
+
+    config SNAPCLIENT_ETH_CLOCK_ENABLE_ACTIVE_LOW
+        depends on SNAPCLIENT_USE_INTERNAL_ETHERNET || SNAPCLIENT_USE_SPI_ETHERNET
+        bool "PHY Clock Enable active LOW"
+        default false
+        help
+            Output LOW instead of HIGH on eithernet PHY clock enable pin for enable state.
 endmenu

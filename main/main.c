@@ -2758,8 +2758,9 @@ void app_main(void) {
   esp_log_level_set("wifi", ESP_LOG_WARN);
   esp_log_level_set("wifi_init", ESP_LOG_WARN);
 
-#if CONFIG_SNAPCLIENT_USE_INTERNAL_ETHERNET || \
-    CONFIG_SNAPCLIENT_USE_SPI_ETHERNET
+#if (CONFIG_SNAPCLIENT_USE_INTERNAL_ETHERNET || \
+    CONFIG_SNAPCLIENT_USE_SPI_ETHERNET) && \
+    (CONFIG_SNAPCLIENT_ETH_CLOCK_ENABLE_GPIO > -1)
   // clang-format off
   // nINT/REFCLKO Function Select Configuration Strap
   //  • When nINTSEL is floated or pulled to
@@ -2777,12 +2778,18 @@ void app_main(void) {
   // for MAC unit.
   //
   // clang-format on
-  gpio_config_t cfg = {.pin_bit_mask = BIT64(GPIO_NUM_5),
-                       .mode = GPIO_MODE_DEF_INPUT,
+  ESP_LOGI(TAG, "Setting ethernet clock enable GPIO");
+  gpio_config_t cfg = {.pin_bit_mask = BIT64(CONFIG_SNAPCLIENT_ETH_CLOCK_ENABLE_GPIO),
+                       .mode = GPIO_MODE_DEF_OUTPUT,
                        .pull_up_en = GPIO_PULLUP_DISABLE,
-                       .pull_down_en = GPIO_PULLDOWN_ENABLE,
+                       .pull_down_en = GPIO_PULLDOWN_DISABLE,
                        .intr_type = GPIO_INTR_DISABLE};
   gpio_config(&cfg);
+#if CONFIG_SNAPCLIENT_ETH_CLOCK_ENABLE_ACTIVE_LOW
+  gpio_set_level((gpio_num_t)CONFIG_SNAPCLIENT_ETH_CLOCK_ENABLE_GPIO, 0);
+#else
+  gpio_set_level((gpio_num_t)CONFIG_SNAPCLIENT_ETH_CLOCK_ENABLE_GPIO, 1);
+#endif
 #endif
 
 #if CONFIG_AUDIO_BOARD_CUSTOM && CONFIG_DAC_ADAU1961
